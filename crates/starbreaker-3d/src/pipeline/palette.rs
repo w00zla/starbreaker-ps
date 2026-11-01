@@ -615,6 +615,18 @@ pub(crate) fn worn_subgeometry(db: &Database, record: &Record, tag: &str) -> Opt
     tagged_subgeometry(db, record, tag, true)
 }
 
+/// The SubGeometry an export draws instead of the record's default geometry:
+/// the worn model (`--worn`), else the paint variant's (`--variant-tags`).
+/// The root's mesh and its node table both come from it: the node table of
+/// the default geometry (the Geist arms' storage crate) moved the worn
+/// model's parts onto the crate's helpers.
+pub(crate) fn selected_subgeometry(db: &Database, record: &Record, opts: &super::ExportOptions) -> Option<WornGeometry> {
+    opts.worn_subgeometry_tag
+        .as_deref()
+        .and_then(|tag| worn_subgeometry(db, record, tag))
+        .or_else(|| opts.variant_subgeometry.then(|| variant_subgeometry(db, record)).flatten())
+}
+
 /// The SubGeometry tagged `tag`; `sibling_material` lets an entry without
 /// a material borrow a sibling's (worn armour: the Morozov-SH core's male
 /// entry names none). Paint variants must not: the LH86's palette-only

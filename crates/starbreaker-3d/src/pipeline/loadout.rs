@@ -121,9 +121,14 @@ pub fn resolve_loadout_meshes(
         db, record, &geometry_material, &material_context,
     );
 
-    let (geometry_path, material_path) = super::geometry_variant::resolve(
-        db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
-    )?;
+    // The same geometry the root payload draws (export_entity_payload): its
+    // node table places the mesh's parts and the mounted items.
+    let (geometry_path, material_path) = match super::selected_subgeometry(db, record, opts) {
+        Some(sub) => (sub.geometry, if sub.material.is_empty() { material_path } else { sub.material }),
+        None => super::geometry_variant::resolve(
+            db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
+        )?,
+    };
 
     // Load NMC + skeleton from .cga/.chr
     let (nmc, _mtl) = load_nmc_and_material(p4k, &geometry_path, &material_path);
@@ -480,5 +485,35 @@ mod tests {
         assert!(port_flags_mark_invisible("uneditable invisible"));
         assert!(!port_flags_mark_invisible("dockingport1"));
         assert!(!port_flags_mark_invisible("not_invisible"));
+    }
+
+    /// Real-P4K regression: a worn export draws the SubGeometry's inventory
+    /// model, so the root's node table must be that model's, not the default
+    /// geometry's. The Geist arms' default geometry is their storage crate,
+    /// whose `$grip_left_1` helper (0.28 m right, 0.20 m up) carried the
+    /// shoulder pads -- the model's second node -- off the arms. Skips
+    /// without Data.p4k.
+    #[test]
+    fn worn_root_takes_the_node_table_of_the_worn_geometry() {
+        let Some(p4k) = crate::test_p4k::p4k() else { return };
+        let dcb = p4k
+            .read_file("Data\\Game2.dcb")
+            .or_else(|_| p4k.read_file("Data\\Game.dcb"))
+            .expect("Game.dcb should be readable");
+        let db = Database::from_bytes(&dcb).expect("Game.dcb should parse");
+        let idx = starbreaker_datacore::loadout::EntityIndex::new(&db);
+        let record = idx.find_record("kap_combat_light_arms_01_01_01").expect("Geist arms record");
+        let tree = starbreaker_datacore::loadout::resolve_loadout_indexed(&idx, record);
+        let opts = ExportOptions { worn_subgeometry_tag: Some("Male".into()), ..Default::default() };
+
+        let resolved = resolve_loadout_meshes(&db, p4k, record, &tree, &opts).expect("resolves");
+
+        let worn = worn_subgeometry(&db, record, "Male").expect("a worn model");
+        let (expected, _) = load_nmc_and_material(p4k, &worn.geometry, &worn.material);
+        let names = |nmc: Option<&crate::nmc::NodeMeshCombo>| {
+            nmc.map(|nmc| nmc.nodes.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
+        };
+        assert!(expected.is_some(), "the worn model {} has a node table", worn.geometry);
+        assert_eq!(names(resolved.nmc.as_ref()), names(expected.as_ref()));
     }
 }

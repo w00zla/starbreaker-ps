@@ -119,11 +119,7 @@ fn export_entity_payload_cached(
     let mut material_context = published_tags(&item_tags(db, record));
     material_context.extend(opts.worn_subgeometry_tag.iter().cloned());
     let material_path = record_material_path(db, record, &geometry_material, &material_context);
-    let worn = opts
-        .worn_subgeometry_tag
-        .as_deref()
-        .and_then(|tag| super::worn_subgeometry(db, record, tag))
-        .or_else(|| opts.variant_subgeometry.then(|| super::variant_subgeometry(db, record)).flatten());
+    let worn = super::selected_subgeometry(db, record, opts);
     let base_material = material_path.clone();
     let (geometry_path, material_path) = match &worn {
         Some(w) => (
