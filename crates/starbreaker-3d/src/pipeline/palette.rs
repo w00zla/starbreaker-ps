@@ -831,6 +831,45 @@ pub(crate) fn query_tint_palette_or_prefix(db: &Database, record: &Record) -> Op
     None
 }
 
+/// The TintPaletteTree names an exported entity without a palette of its
+/// own falls back to, in order: its material's `DefaultPalette`, then the
+/// game's `default` tree (primary white, secondary sRGB 112, tertiary 21).
+/// Without either the tinted layers stayed white: the Hill Horror Reborn's
+/// face (ccc_skinmask, layer 3 on secondary, tint 0.112 red) drew red where
+/// the game shows it black.
+pub(crate) fn fallback_tint_palette_names(mtl: Option<&mtl::MtlFile>) -> Vec<String> {
+    let material_default = mtl
+        .and_then(|mtl| {
+            mtl.material_set
+                .attributes
+                .iter()
+                .find(|attribute| attribute.name.eq_ignore_ascii_case("DefaultPalette"))
+        })
+        .and_then(|attribute| {
+            attribute
+                .value
+                .replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .map(str::to_ascii_lowercase)
+        });
+    material_default.into_iter().chain(["default".to_string()]).collect()
+}
+
+/// The first of [`fallback_tint_palette_names`] that names a TintPaletteTree.
+pub(crate) fn query_fallback_tint_palette(db: &Database, mtl: Option<&mtl::MtlFile>) -> Option<mtl::TintPalette> {
+    let tpt_si = db.struct_id("TintPaletteTree")?;
+    fallback_tint_palette_names(mtl).into_iter().find_map(|wanted| {
+        let palette_record = db.records_of_type(tpt_si).find(|r| {
+            let name = db.resolve_string2(r.name_offset).to_lowercase();
+            name.rsplit('.').next().unwrap_or(&name) == wanted
+        })?;
+        log::info!("  palette fallback: {wanted}");
+        query_tint_from_record(db, palette_record, Some(wanted))
+    })
+}
+
 pub(crate) fn query_related_tint_palettes(
     db: &Database,
     record: &Record,
@@ -1256,6 +1295,30 @@ fn load_layer_specular_texture_mean(p4k: &MappedP4k, material: &mtl::SubMaterial
 mod tests {
     use super::*;
     use starbreaker_datacore::query::value::Value;
+
+    fn mtl_with_default_palette(value: Option<&str>) -> mtl::MtlFile {
+        mtl::MtlFile {
+            materials: Vec::new(),
+            source_path: None,
+            paint_override: None,
+            material_set: mtl::MaterialSetAuthoredData {
+                attributes: value
+                    .map(|value| mtl::AuthoredAttribute { name: "DefaultPalette".into(), value: value.into() })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn fallback_palettes_are_the_material_default_then_the_game_default() {
+        let named = mtl_with_default_palette(Some("Libs/Foundry/Records/TintPalettes/RRS_armor/RRS_heavy"));
+        assert_eq!(fallback_tint_palette_names(Some(&named)), vec!["rrs_heavy", "default"]);
+        let unnamed = mtl_with_default_palette(None);
+        assert_eq!(fallback_tint_palette_names(Some(&unnamed)), vec!["default"]);
+        assert_eq!(fallback_tint_palette_names(None), vec!["default"]);
+    }
 
     #[test]
     fn metadata_material_paths_preserve_extension_and_archive_root() {

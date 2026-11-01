@@ -189,7 +189,8 @@ fn export_entity_payload_cached(
                 .as_deref()
                 .and_then(|tag| super::palette::query_geometry_variant_palette(db, record, tag))
         })
-        .or_else(|| query_tint_palette_or_prefix(db, record));
+        .or_else(|| query_tint_palette_or_prefix(db, record))
+        .or_else(|| super::palette::query_fallback_tint_palette(db, mtl_file.as_ref()));
     Ok((
         mesh,
         mtl_file,
