@@ -246,6 +246,26 @@ def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | N
     }
 
 
+def layer_blend_decal_sheet(submaterial: SubmaterialRecord) -> TextureReference | None:
+    """The decal sheet a LayerBlend_V2 material lays over its layers, or None.
+
+    `%DECALS` draws "diffuse and parallax occlusion decals via 2nd UV set"
+    (the game's `Shaders/LayerBlend_V2.ext`); the sheet is the `decal_sheet`
+    texture (TexSlot9). A skin keeps that UV set in its vertex colour, which
+    `%WEAR_DIRT_AO_VERTEX` makes wear, dirt and AO instead, so with that flag
+    the sheet is left out.
+    """
+    if submaterial.shader_family != "LayerBlend_V2":
+        return None
+    tokens = {token.upper() for token in submaterial.decoded_feature_flags.tokens}
+    if "DECALS" not in tokens or "WEAR_DIRT_AO_VERTEX" in tokens:
+        return None
+    return next(
+        (texture for texture in _all_texture_candidates(submaterial) if texture.role == "decal_sheet" and texture.export_path),
+        None,
+    )
+
+
 def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureReference | None:
     for texture in _all_texture_candidates(submaterial):
         if texture.alpha_semantic == "smoothness" and texture.export_path:

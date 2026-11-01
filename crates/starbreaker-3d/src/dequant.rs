@@ -7,6 +7,19 @@ pub fn decode_half2(raw: [u16; 2]) -> [f32; 2] {
     ]
 }
 
+/// The second UV set packed into a skin vertex's colour (RGBA, after the BGRA swizzle).
+///
+/// LayerBlend_V2 draws its `%DECALS` "via 2nd UV set" (`Shaders/LayerBlend_V2.ext`); a
+/// `.skinm` without a second-UV stream carries that set in the colour: two 12-bit fields,
+/// `R << 4 | G >> 4` and `(G & 15) << 8 | B`, in steps of 1/1024, shifted by half and wrapped
+/// into 0..1. The plain colour of an undecorated vertex (160, 21, 254) lands on the decal
+/// sheet's empty corner; the ASD Geist helmet's visor grid lands on its logo.
+pub fn decode_colour_uv2(rgba: [u8; 4]) -> [f32; 2] {
+    let [r, g, b, _] = rgba.map(u32::from);
+    let wrap = |field: u32| ((field + 512) & 1023) as f32 / 1024.0;
+    [wrap(r << 4 | g >> 4), wrap((g & 15) << 8 | b)]
+}
+
 pub fn decode_half4(raw: [u16; 4]) -> [f32; 4] {
     [
         f16::from_bits(raw[0]).to_f32(),
@@ -159,6 +172,14 @@ pub fn decode_packed_unit_vector(val: u32) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_colour_uv2_known_values() {
+        // The ASD helmet's visor decal and the plain colour beside it (sheet corner).
+        assert_eq!(decode_colour_uv2([218, 149, 114, 255]), [937.0 / 1024.0, 882.0 / 1024.0]);
+        assert_eq!(decode_colour_uv2([160, 21, 254, 255]), [1.0 / 1024.0, 1022.0 / 1024.0]);
+        assert_eq!(decode_colour_uv2([0, 0, 0, 0]), [0.5, 0.5]);
+    }
 
     #[test]
     fn decode_half2_known_values() {

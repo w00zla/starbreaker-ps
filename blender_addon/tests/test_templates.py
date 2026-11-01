@@ -13,9 +13,12 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 sys.path.insert(0, str(ADDON_ROOT))
 
 from starbreaker_addon.manifest import FeatureFlags, MaterialSidecar, PaletteRouting, SubmaterialRecord, TextureReference
+from dataclasses import replace
+
 from starbreaker_addon.templates import (
     active_submaterials,
     has_virtual_input,
+    layer_blend_decal_sheet,
     material_palette_channels,
     representative_textures,
     smoothness_texture_reference,
@@ -128,6 +131,21 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("HumanSkin_V2")).template_key, "biological")
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("HairPBR")).template_key, "hair")
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("Hologram")).template_key, "effects")
+
+    def test_layer_blend_decals_take_the_decal_sheet(self) -> None:
+        sheet = TextureReference(role="decal_sheet", source_path=None, export_path="t/sheet.png", export_kind="source", slot="TexSlot9")
+        helmet = replace(
+            synthetic_submaterial("LayerBlend_V2", tokens=["NORMAL_MAP", "BLEND_MAP", "DECALS"]),
+            texture_slots=[sheet],
+        )
+        self.assertIs(layer_blend_decal_sheet(helmet), sheet)
+        # The vertex colour is wear, dirt and AO there, not the second UV set a skin keeps in it.
+        worn = replace(helmet, decoded_feature_flags=replace(helmet.decoded_feature_flags, tokens=["BLEND_MAP", "DECALS", "WEAR_DIRT_AO_VERTEX"]))
+        self.assertIsNone(layer_blend_decal_sheet(worn))
+        plain = replace(helmet, decoded_feature_flags=replace(helmet.decoded_feature_flags, tokens=["NORMAL_MAP", "BLEND_MAP"]))
+        self.assertIsNone(layer_blend_decal_sheet(plain))
+        illum = replace(synthetic_submaterial("Illum", tokens=["DECAL"]), texture_slots=[sheet])
+        self.assertIsNone(layer_blend_decal_sheet(illum))
 
     def test_hard_surface_stencil_material_stays_on_hard_surface_path(self) -> None:
         hard_surface_stencil = synthetic_submaterial("HardSurface", tokens=["STENCIL_MAP", "STENCIL_AS_STICKER"])
