@@ -1841,13 +1841,15 @@ class GroupsMixin:
             Alpha               float   (default 1)
             Emission Color      color   (default black)
             Emission Strength   float   (default 0)
+            Decal Normal        vector  (a decal's own normal, from its own tangent frame)
+            Decal Normal Mix    float   (default 0: the decal's coverage)
 
         Outputs:
             Shader              shader
         """
         self._invalidate_runtime_group_if_unexpected(
             "StarBreaker Runtime Principled",
-            "principled_v2",
+            "principled_v3",
             {
                 "NodeGroupInput": 1,
                 "NodeGroupOutput": 1,
@@ -1855,12 +1857,12 @@ class GroupsMixin:
                 "ShaderNodeNormalMap": 1,
                 "ShaderNodeBump": 1,
                 "ShaderNodeNewGeometry": 1,
-                "ShaderNodeMix": 2,
+                "ShaderNodeMix": 3,
             },
         )
         group_tree, group_input, group_output = self._begin_runtime_shared_group(
             "StarBreaker Runtime Principled",
-            signature="principled_v2",
+            signature="principled_v3",
             inputs=[
                 ("Base Color", "NodeSocketColor"),
                 ("Roughness", "NodeSocketFloat"),
@@ -1874,10 +1876,12 @@ class GroupsMixin:
                 ("Alpha", "NodeSocketFloat"),
                 ("Emission Color", "NodeSocketColor"),
                 ("Emission Strength", "NodeSocketFloat"),
+                ("Decal Normal", "NodeSocketVector"),
+                ("Decal Normal Mix", "NodeSocketFloat"),
             ],
             outputs=[("Shader", "NodeSocketShader")],
         )
-        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v2":
+        if group_tree.get("starbreaker_runtime_built_signature") == "principled_v3":
             return group_tree
         nodes = group_tree.nodes
         links = group_tree.links
@@ -1894,6 +1898,8 @@ class GroupsMixin:
         _set_group_input_default(group_input, "Alpha", 1.0)
         _set_group_input_default(group_input, "Emission Color", (0.0, 0.0, 0.0, 1.0))
         _set_group_input_default(group_input, "Emission Strength", 0.0)
+        _set_group_input_default(group_input, "Decal Normal", (0.0, 0.0, 1.0))
+        _set_group_input_default(group_input, "Decal Normal Mix", 0.0)
 
         # Normal map chain: NormalMap driven by Normal Color + Strength.
         normal_map = nodes.new("ShaderNodeNormalMap")
@@ -1914,12 +1920,23 @@ class GroupsMixin:
         links.new(_output_socket(geometry, "Normal"), normal_toggle.inputs[4])
         links.new(_output_socket(normal_map, "Normal"), normal_toggle.inputs[5])
 
+        # A decal's normal over the surface's, by its coverage. It comes in as
+        # a vector: a decal read through the second UV set has its own tangent
+        # frame, which this group's normal map (the first set) does not know.
+        decal_normal = nodes.new("ShaderNodeMix")
+        decal_normal.location = (-420, -360)
+        if hasattr(decal_normal, "data_type"):
+            decal_normal.data_type = "VECTOR"
+        links.new(_output_socket(group_input, "Decal Normal Mix"), decal_normal.inputs[0])
+        links.new(normal_toggle.outputs[1], decal_normal.inputs[4])
+        links.new(_output_socket(group_input, "Decal Normal"), decal_normal.inputs[5])
+
         # Bump node: feeds off the toggled normal vector.
         bump = nodes.new("ShaderNodeBump")
         bump.location = (-200, -180)
         links.new(_output_socket(group_input, "Height"), _input_socket(bump, "Height"))
         links.new(_output_socket(group_input, "Bump Strength"), _input_socket(bump, "Strength"))
-        links.new(normal_toggle.outputs[1], _input_socket(bump, "Normal"))
+        links.new(decal_normal.outputs[1], _input_socket(bump, "Normal"))
 
         # Toggle between "no bump" (normal_toggle output) and bump output.
         bump_toggle = nodes.new("ShaderNodeMix")
@@ -1927,7 +1944,7 @@ class GroupsMixin:
         if hasattr(bump_toggle, "data_type"):
             bump_toggle.data_type = "VECTOR"
         links.new(_output_socket(group_input, "Use Bump"), bump_toggle.inputs[0])
-        links.new(normal_toggle.outputs[1], bump_toggle.inputs[4])
+        links.new(decal_normal.outputs[1], bump_toggle.inputs[4])
         links.new(_output_socket(bump, "Normal"), bump_toggle.inputs[5])
 
         # Principled BSDF.
@@ -1949,7 +1966,7 @@ class GroupsMixin:
         links.new(bump_toggle.outputs[1], _input_socket(principled, "Normal"))
 
         links.new(principled.outputs[0], group_output.inputs["Shader"])
-        group_tree["starbreaker_runtime_built_signature"] = "principled_v2"
+        group_tree["starbreaker_runtime_built_signature"] = "principled_v3"
         return group_tree
 
     def _ensure_runtime_hardsurface_stencil_group(self) -> bpy.types.ShaderNodeTree:

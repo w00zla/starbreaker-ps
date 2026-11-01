@@ -19,6 +19,7 @@ from starbreaker_addon.templates import (
     active_submaterials,
     has_virtual_input,
     layer_blend_decal_sheet,
+    layer_blend_pom_decals,
     material_palette_channels,
     representative_textures,
     smoothness_texture_reference,
@@ -131,6 +132,38 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("HumanSkin_V2")).template_key, "biological")
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("HairPBR")).template_key, "hair")
         self.assertEqual(template_plan_for_submaterial(synthetic_submaterial("Hologram")).template_key, "effects")
+
+    def test_layer_blend_pom_decals_are_not_the_base_textures(self) -> None:
+        # Morozov-SH core (rrs specialist heavy): the POM decal set in slots 1/2/4/8 beside the base normal in 3.
+        def ref(slot: str, role: str, name: str) -> TextureReference:
+            return TextureReference(role=role, source_path=None, export_path=f"t/{name}.png", export_kind="source", slot=slot)
+
+        pom_color = ref("TexSlot1", "base_color", "poms_decals_diffa")
+        pom_normal = ref("TexSlot2", "normal_gloss", "poms_decals_ddna")
+        pom_spec = ref("TexSlot4", "specular_support", "poms_decals_spec")
+        pom_height = ref("TexSlot8", "height", "poms_decals_displ")
+        base_normal = ref("TexSlot3", "normal_gloss", "core_ddna")
+        core = replace(
+            synthetic_submaterial("LayerBlend_V2", tokens=["NORMAL_MAP", "BLEND_MAP", "DECALS", "HEIGHT_MAP"]),
+            texture_slots=[pom_color, pom_normal, base_normal, pom_spec, pom_height],
+            direct_textures=[replace(pom_color, slot=None, role="diffuse"), replace(pom_normal, slot=None)],
+            derived_textures=[
+                TextureReference(role="roughness", source_path=None, export_path="t/poms_decals_ddna_roughness.png", export_kind="derived"),
+                TextureReference(role="roughness", source_path=None, export_path="t/core_ddna_roughness.png", export_kind="derived"),
+            ],
+        )
+        pom = layer_blend_pom_decals(core)
+        self.assertEqual((pom.color, pom.normal, pom.specular, pom.height), (pom_color, pom_normal, pom_spec, pom_height))
+        self.assertEqual(pom.roughness.export_path, "t/poms_decals_ddna_roughness.png")
+        textures = representative_textures(core)
+        self.assertEqual(textures["normal"], "t/core_ddna.png")
+        self.assertEqual(textures["roughness"], "t/core_ddna_roughness.png")
+        self.assertIsNone(textures["base_color"])
+        self.assertIsNone(textures["height"])
+        # Without %DECALS slot 1 is no decal: plain LayerBlend keeps its textures.
+        plain = replace(core, decoded_feature_flags=replace(core.decoded_feature_flags, tokens=["BLEND_MAP"]))
+        self.assertIsNone(layer_blend_pom_decals(plain))
+        self.assertEqual(representative_textures(plain)["base_color"], "t/poms_decals_diffa.png")
 
     def test_layer_blend_decals_take_the_decal_sheet(self) -> None:
         sheet = TextureReference(role="decal_sheet", source_path=None, export_path="t/sheet.png", export_kind="source", slot="TexSlot9")

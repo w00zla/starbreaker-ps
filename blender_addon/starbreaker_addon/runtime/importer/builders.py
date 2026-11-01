@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import bpy
@@ -85,6 +86,7 @@ from ...palette import (
 from ...templates import (
     has_virtual_input,
     layer_blend_decal_sheet,
+    layer_blend_pom_decals,
     material_palette_channels,
     representative_textures,
     template_plan_for_submaterial,
@@ -147,6 +149,19 @@ def _layered_wear_first_non_neutral_tint(
     return None
 
 
+@dataclass(frozen=True)
+class LayerDecal:
+    """A decal over a LayerBlend surface: the colour with the decal on it, its
+    coverage, and under it the print's metallic, roughness, normal and height."""
+
+    color: Any
+    alpha: Any
+    metallic: Any
+    roughness: Any = None
+    normal: Any = None
+    height: Any = None
+
+
 def _layer_metal_tint(layer: LayerManifestEntry) -> tuple[float, float, float] | None:
     """A layer's colour: its tint, times its specular colour when it is a
     metal. A metal's colour is its F0, and the layer file keeps that in
@@ -161,6 +176,13 @@ def _layer_metal_tint(layer: LayerManifestEntry) -> tuple[float, float, float] |
     specular = _triplet_from_any(layer.layer_snapshot.get("specular"))
     if specular is None or all(abs(channel - 1.0) < 1e-6 for channel in specular):
         return tint
+    return _metal_tint_times_specular(tint, specular)
+
+
+def _metal_tint_times_specular(
+    tint: tuple[float, float, float], specular: tuple[float, float, float]
+) -> tuple[float, float, float]:
+    """A metal layer's F0: its slot tint times its specular colour."""
     # A near-black tint on a metal keeps only its hue: the Hurston
     # Attrition's copper rails (weapon_copper_striped_01, tint
     # 0.026/0.045/0.061) drew black at full strength and orange on the bare
@@ -178,14 +200,20 @@ def _layer_palette_metal_specular(
     layer: LayerManifestEntry, palette: PaletteRecord | None
 ) -> tuple[float, float, float] | None:
     """A metal layer on a palette channel takes that channel's finish
-    specular as its colour (F0), not tint x palette tint: the Artimex
-    Chairman's Club's bronze_scratched sits on tertiary, tint 0.007, and drew
-    black where the game shows gold, its specular (0.73, 0.43, 0.11); the Geist
-    helmet's gun_metal_03 on primary (finish 0.093) drew a black mirror, the
-    game the same dark grey as the ASD Edition."""
+    specular in place of its own, times its slot tint (`_metal_tint_times_specular`),
+    not tint x palette tint: the Artimex Chairman's Club's bronze_scratched
+    sits on tertiary, palette tint 0.007, and drew black where the game shows
+    gold, its specular (0.73, 0.43, 0.11); the Geist helmet's gun_metal_03 on
+    primary (finish 0.093) drew a black mirror, the game the same dark grey as
+    the ASD Edition. Without the slot tint the Geist Whiteout's chin,
+    iron_scratched_01 at TintColor 0.175 on secondary (finish 125/146/171
+    sRGB), drew a bright steel blue about 4x the game's dark slate."""
     if layer.palette_channel is None or _layer_snapshot_float(layer, "metallic") < 0.5:
         return None
-    return palette_finish_specular(palette, layer.palette_channel.name)
+    specular = palette_finish_specular(palette, layer.palette_channel.name)
+    if specular is None or layer.tint_color is None:
+        return specular
+    return _metal_tint_times_specular(layer.tint_color, specular)
 
 
 def _texture_reference_uv_scale(ref: TextureReference) -> tuple[float, float] | None:
@@ -2601,39 +2629,14 @@ class BuildersMixin:
                 if target is not None:
                     links.new(socket, target)
 
-        # The decal sheet over the layers, read through the second UV set.
-        decal = (
-            self._layer_blend_decal_sockets(nodes, links, submaterial, color_output, x=-280, y=2200)
-            if color_output is not None
-            else None
-        )
-        if decal is not None:
-            color_output, decal_alpha, decal_metallic = decal
-            target = _input_socket(principled_group, "Base Color")
-            if target is not None:
-                links.new(color_output, target)
-            # Under a motif the print's finish: metal from DiffuseDecalSpec, gloss from DiffuseDecalGloss (0-255).
-            decal_gloss = _optional_float_public_param(submaterial, "DiffuseDecalGloss")
-            finish: dict[str, Any] = {"Metallic": decal_metallic}
-            if decal_gloss is not None:
-                finish["Roughness"] = 1.0 - min(max(decal_gloss / 255.0, 0.0), 1.0)
-            for row, (name, value) in enumerate(finish.items()):
-                target = _input_socket(principled_group, name)
-                if target is None:
-                    continue
-                mix = nodes.new("ShaderNodeMix")
-                mix.data_type = "FLOAT"
-                mix.location = (120, 2000 - 200 * row)
-                links.new(decal_alpha, mix.inputs[0])
-                if target.is_linked:
-                    links.new(target.links[0].from_socket, mix.inputs[2])
-                else:
-                    mix.inputs[2].default_value = target.default_value
-                if isinstance(value, float):
-                    mix.inputs[3].default_value = value
-                else:
-                    links.new(value, mix.inputs[3])
-                links.new(mix.outputs[0], target)
+        # The decal sheet, then the parallax occlusion decals, over the layers,
+        # each read through the second UV set.
+        for row, overlay in enumerate((self._layer_blend_decal_sockets, self._layer_blend_pom_sockets)):
+            if color_output is None:
+                break
+            decal = overlay(nodes, links, submaterial, color_output, x=-280, y=2200 + 1200 * row)
+            if decal is not None:
+                color_output = self._lay_decal_over(nodes, links, principled_group, decal, y=2000 + 1200 * row)
 
         # Normal map.
         normal_path = textures["normal"]
@@ -2852,18 +2855,102 @@ class BuildersMixin:
         *,
         x: int,
         y: int,
-    ) -> tuple[Any, Any, Any] | None:
-        """The colour with the material's decal sheet laid over it, the
-        sheet's alpha and the print's metallic, or None (`layer_blend_decal_sheet`).
+    ) -> LayerDecal | None:
+        """The material's decal sheet over `color` (`layer_blend_decal_sheet`),
+        or None.
 
         The sheet is read through the second UV set (UVMap.001), which a skin
         carries in its vertex colour; outside its motifs it points at a clear
         corner of the sheet. Read through UV1 instead, the ASD Geist helmet
         had "046-709" on its visor and ASD's logo with lettering at its ear;
-        in game the logo sits on the visor and the ear is plain.
+        in game the logo sits on the visor and the ear is plain. The print's
+        finish: metal from DiffuseDecalSpec, gloss from DiffuseDecalGloss (0-255).
         """
         sheet = layer_blend_decal_sheet(submaterial)
-        node = self._image_node(nodes, sheet.export_path if sheet is not None else None, x=x, y=y, is_color=True)
+        node = self._second_uv_image(nodes, links, sheet, is_color=True, x=x, y=y)
+        if node is None:
+            return None
+        specular = _public_param_triplet(submaterial, "DiffuseDecalSpec") or (0.04, 0.04, 0.04)
+        print_color, print_metallic = self._specular_to_metal_rough_nodes(
+            nodes, links, node.outputs["Color"], specular, x=x + 300, y=y - 300
+        )
+        gloss = _optional_float_public_param(submaterial, "DiffuseDecalGloss")
+        roughness = None if gloss is None else 1.0 - min(max(gloss / 255.0, 0.0), 1.0)
+        return LayerDecal(
+            self._mix_color(nodes, links, node.outputs["Alpha"], color, print_color, x=x + 1500, y=y),
+            node.outputs["Alpha"],
+            print_metallic,
+            roughness,
+        )
+
+    def _layer_blend_pom_sockets(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        color: Any,
+        *,
+        x: int,
+        y: int,
+    ) -> LayerDecal | None:
+        """The material's parallax occlusion decals over `color`
+        (`layer_blend_pom_decals`), or None: colour and coverage from TexSlot1,
+        F0 per texel from the spec map (TexSlot4), roughness from the normal
+        map's gloss, the normal in the second set's own tangent frame and the
+        height as a bump (screen-space, so the UV set does not matter). The
+        relief is not ray-marched: PomDisplacement is 5 mm at most on the
+        Morozov-SH armour, below a pixel of a catalogue icon."""
+        pom = layer_blend_pom_decals(submaterial)
+        node = self._second_uv_image(nodes, links, pom.color if pom else None, is_color=True, x=x, y=y)
+        if pom is None or node is None:
+            return None
+        alpha = node.outputs["Alpha"]
+        spec_node = self._second_uv_image(nodes, links, pom.specular, is_color=True, x=x, y=y - 300)
+        specular = spec_node.outputs["Color"] if spec_node is not None else (0.04, 0.04, 0.04)
+        print_color, print_metallic = self._specular_to_metal_rough_nodes(
+            nodes, links, node.outputs["Color"], specular, x=x + 300, y=y - 300
+        )
+        rough_node = self._second_uv_image(nodes, links, pom.roughness, is_color=False, x=x, y=y - 600)
+        normal = None
+        normal_node = self._second_uv_image(nodes, links, pom.normal, is_color=False, x=x, y=y - 900)
+        if normal_node is not None:
+            normal_map = nodes.new("ShaderNodeNormalMap")
+            normal_map.location = (x + 300, y - 900)
+            normal_map.uv_map = "UVMap.001"
+            links.new(normal_node.outputs["Color"], normal_map.inputs["Color"])
+            normal = normal_map.outputs["Normal"]
+        height = None
+        height_node = self._second_uv_image(nodes, links, pom.height, is_color=False, x=x, y=y - 1200)
+        if height_node is not None:
+            # Neutral 0.5 where no decal covers the surface.
+            flat = nodes.new("ShaderNodeMix")
+            flat.data_type = "FLOAT"
+            flat.location = (x + 300, y - 1200)
+            links.new(alpha, flat.inputs[0])
+            flat.inputs[2].default_value = 0.5
+            links.new(height_node.outputs["Color"], flat.inputs[3])
+            height = flat.outputs[0]
+        return LayerDecal(
+            self._mix_color(nodes, links, alpha, color, print_color, x=x + 1500, y=y),
+            alpha,
+            print_metallic,
+            rough_node.outputs["Color"] if rough_node is not None else None,
+            normal,
+            height,
+        )
+
+    def _second_uv_image(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        ref: TextureReference | None,
+        *,
+        is_color: bool,
+        x: int,
+        y: int,
+    ) -> bpy.types.ShaderNodeTexImage | None:
+        """An image of a decal read through the second UV set, clipped outside it."""
+        node = self._image_node(nodes, ref.export_path if ref is not None else None, x=x, y=y, is_color=is_color)
         if node is None:
             return None
         if node.inputs["Vector"].is_linked:
@@ -2876,51 +2963,88 @@ class BuildersMixin:
         uv.location = (x - 300, y)
         uv.uv_map = "UVMap.001"
         links.new(uv.outputs["UV"], node.inputs["Vector"])
-        specular = _public_param_triplet(submaterial, "DiffuseDecalSpec") or (0.04, 0.04, 0.04)
-        print_color, print_metallic = self._specular_to_metal_rough_nodes(
-            nodes, links, node.outputs["Color"], specular, x=x + 300, y=y - 300
-        )
+        return node
+
+    @staticmethod
+    def _mix_color(nodes: bpy.types.Nodes, links: bpy.types.NodeLinks, factor: Any, a: Any, b: Any, *, x: int, y: int) -> Any:
         mix = nodes.new("ShaderNodeMix")
         mix.data_type = "RGBA"
-        mix.location = (x + 1500, y)
-        links.new(node.outputs["Alpha"], mix.inputs[0])
-        links.new(color, mix.inputs[6])
-        links.new(print_color, mix.inputs[7])
-        return mix.outputs[2], node.outputs["Alpha"], print_metallic
+        mix.location = (x, y)
+        links.new(factor, mix.inputs[0])
+        links.new(a, mix.inputs[6])
+        links.new(b, mix.inputs[7])
+        return mix.outputs[2]
+
+    def _lay_decal_over(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        principled_group: Any,
+        decal: LayerDecal,
+        *,
+        y: int,
+    ) -> Any:
+        """Wire a decal into the surface: its colour, and under its coverage
+        its metallic, roughness, normal and bump. Returns the new colour."""
+        target = _input_socket(principled_group, "Base Color")
+        if target is not None:
+            links.new(decal.color, target)
+        finish: dict[str, Any] = {"Metallic": decal.metallic}
+        if decal.roughness is not None:
+            finish["Roughness"] = decal.roughness
+        for row, (name, value) in enumerate(finish.items()):
+            target = _input_socket(principled_group, name)
+            if target is None:
+                continue
+            mix = nodes.new("ShaderNodeMix")
+            mix.data_type = "FLOAT"
+            mix.location = (120, y - 200 * row)
+            links.new(decal.alpha, mix.inputs[0])
+            if target.is_linked:
+                links.new(target.links[0].from_socket, mix.inputs[2])
+            else:
+                mix.inputs[2].default_value = target.default_value
+            if isinstance(value, float):
+                mix.inputs[3].default_value = value
+            else:
+                links.new(value, mix.inputs[3])
+            links.new(mix.outputs[0], target)
+        if decal.normal is not None:
+            for name, socket in (("Decal Normal", decal.normal), ("Decal Normal Mix", decal.alpha)):
+                target = _input_socket(principled_group, name)
+                if target is not None:
+                    links.new(socket, target)
+        if decal.height is not None:
+            target = _input_socket(principled_group, "Height")
+            if target is not None:
+                links.new(decal.height, target)
+                self._set_socket_default(_input_socket(principled_group, "Use Bump"), 1.0)
+        return decal.color
 
     def _specular_to_metal_rough_nodes(
         self,
         nodes: bpy.types.Nodes,
         links: bpy.types.NodeLinks,
         diffuse: Any,
-        specular: tuple[float, float, float],
+        specular: tuple[float, float, float] | Any,
         *,
         x: int,
         y: int,
     ) -> tuple[Any, Any]:
-        """Base colour and metallic for a per-pixel diffuse and a constant
-        specular colour: the exporter's `mtl::specular_to_metal_rough`
-        (Khronos' `solveMetallic`, as for palette entries) in nodes. The
-        Golden Blossom's gold print, DiffuseDecalSpec (0.79, 0.58, 0.23) on a
-        dark motif, comes out gold metal; the ASD logo's 0.04 stays paint."""
+        """Base colour and metallic for a per-pixel diffuse and a specular
+        colour, constant or per pixel (a spec map's socket): the exporter's
+        `mtl::specular_to_metal_rough` (Khronos' `solveMetallic`, as for
+        palette entries) in nodes. The Golden Blossom's gold print,
+        DiffuseDecalSpec (0.79, 0.58, 0.23) on a dark motif, comes out gold
+        metal; the ASD logo's 0.04 stays paint."""
         dielectric, epsilon = 0.04, 1e-6
-        max_spec = max(specular)
-        diffuse_scale = (1.0 - max_spec) / (1.0 - dielectric)
-        s = (0.299 * specular[0] ** 2 + 0.587 * specular[1] ** 2 + 0.114 * specular[2] ** 2) ** 0.5
-        if s < dielectric:
-            scale = nodes.new("ShaderNodeVectorMath")
-            scale.operation = "SCALE"
-            scale.location = (x, y)
-            links.new(diffuse, scale.inputs[0])
-            scale.inputs[3].default_value = diffuse_scale
-            return scale.outputs[0], 0.0
 
-        def math_node(operation: str, a: Any, b: Any = None, *, row: int, clamp: bool = False) -> Any:
+        def math_node(operation: str, a: Any, b: Any = None, c: Any = None, *, row: int, clamp: bool = False) -> Any:
             node = nodes.new("ShaderNodeMath")
             node.operation = operation
             node.use_clamp = clamp
             node.location = (x + 160 * row, y)
-            for socket, value in ((node.inputs[0], a), (node.inputs[1], b)):
+            for socket, value in ((node.inputs[0], a), (node.inputs[1], b), (node.inputs[2], c)):
                 if value is None:
                     continue
                 if isinstance(value, float):
@@ -2928,6 +3052,40 @@ class BuildersMixin:
                 else:
                     links.new(value, socket)
             return node.outputs[0]
+
+        weights = (0.299, 0.587, 0.114)
+        if isinstance(specular, tuple):
+            max_spec: Any = max(specular)
+            diffuse_scale: Any = (1.0 - max_spec) / (1.0 - dielectric)
+            s: Any = sum(w * c * c for w, c in zip(weights, specular)) ** 0.5
+            if s < dielectric:
+                scale = nodes.new("ShaderNodeVectorMath")
+                scale.operation = "SCALE"
+                scale.location = (x, y)
+                links.new(diffuse, scale.inputs[0])
+                scale.inputs[3].default_value = diffuse_scale
+                return scale.outputs[0], 0.0
+            b_offset: Any = s - 2.0 * dielectric
+            disc_offset: Any = -4.0 * dielectric * (dielectric - s)
+        else:
+            split = nodes.new("ShaderNodeSeparateColor")
+            split.location = (x - 160, y + 250)
+            links.new(specular, split.inputs[0])
+            max_spec = math_node("MAXIMUM", math_node("MAXIMUM", split.outputs[0], split.outputs[1], row=-1), split.outputs[2], row=0)
+            diffuse_scale = math_node("MULTIPLY", math_node("SUBTRACT", 1.0, max_spec, row=1), 1.0 / (1.0 - dielectric), row=2)
+            spec_squared = nodes.new("ShaderNodeVectorMath")
+            spec_squared.operation = "MULTIPLY"
+            spec_squared.location = (x - 160, y + 500)
+            links.new(specular, spec_squared.inputs[0])
+            links.new(specular, spec_squared.inputs[1])
+            dot = nodes.new("ShaderNodeVectorMath")
+            dot.operation = "DOT_PRODUCT"
+            dot.location = (x, y + 500)
+            links.new(spec_squared.outputs["Vector"], dot.inputs[0])
+            dot.inputs[1].default_value = weights
+            s = math_node("SQRT", dot.outputs["Value"], row=1)
+            b_offset = math_node("SUBTRACT", s, 2.0 * dielectric, row=2)
+            disc_offset = math_node("MULTIPLY_ADD", s, 4.0 * dielectric, -4.0 * dielectric * dielectric, row=3)
 
         def vector_node(operation: str, a: Any, b: Any = None, *, row: int, scale: Any = None) -> Any:
             node = nodes.new("ShaderNodeVectorMath")
@@ -2947,11 +3105,13 @@ class BuildersMixin:
 
         # Perceived brightness of the diffuse, then the metallic that solves for it.
         squared = vector_node("MULTIPLY", diffuse, diffuse, row=0)
-        d = math_node("SQRT", vector_node("DOT_PRODUCT", squared, (0.299, 0.587, 0.114), row=1), row=1)
-        b = math_node("MULTIPLY_ADD", d, diffuse_scale, row=2)
-        b.node.inputs[2].default_value = s - 2.0 * dielectric
-        disc = math_node("MAXIMUM", math_node("ADD", math_node("MULTIPLY", b, b, row=3), -4.0 * dielectric * (dielectric - s), row=4), 0.0, row=5)
+        d = math_node("SQRT", vector_node("DOT_PRODUCT", squared, weights, row=1), row=1)
+        b = math_node("MULTIPLY_ADD", d, diffuse_scale, b_offset, row=2)
+        disc = math_node("MAXIMUM", math_node("ADD", math_node("MULTIPLY", b, b, row=3), disc_offset, row=4), 0.0, row=5)
         metallic = math_node("DIVIDE", math_node("SUBTRACT", math_node("SQRT", disc, row=6), b, row=7), 2.0 * dielectric, row=8, clamp=True)
+        if not isinstance(specular, tuple):
+            # Below a dielectric's 0.04 the solve has no metal: paint.
+            metallic = math_node("MULTIPLY", metallic, math_node("GREATER_THAN", s, dielectric - 1e-9, row=8), row=9)
         # Colour from the diffuse and from the specular, blended by metallic squared.
         from_diffuse = vector_node(
             "SCALE", diffuse, row=9,

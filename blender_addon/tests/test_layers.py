@@ -74,11 +74,11 @@ class PaletteMetalSpecularTests(unittest.TestCase):
     )
 
     @staticmethod
-    def _layer(channel: str | None, metallic: float) -> LayerManifestEntry:
+    def _layer(channel: str | None, metallic: float, tint: float = 1.0) -> LayerManifestEntry:
         return LayerManifestEntry.from_value(
             {
                 "index": 0,
-                "tint_color": [1.0, 1.0, 1.0],
+                "tint_color": [tint, tint, tint],
                 "palette_channel": {"index": 3, "name": channel} if channel else None,
                 "layer_snapshot": {"metallic": metallic, "specular": [0.258, 0.198, 0.065]},
             }
@@ -86,6 +86,23 @@ class PaletteMetalSpecularTests(unittest.TestCase):
 
     def test_palette_metal_takes_the_channel_finish_specular(self) -> None:
         self.assertEqual(_layer_palette_metal_specular(self._layer("tertiary", 1.0), self.PALETTE), (0.73, 0.43, 0.11))
+
+    def test_the_layer_tint_scales_the_finish_specular(self) -> None:
+        # Geist Whiteout: iron_scratched_01 on secondary at TintColor 0.175, finish (125,146,171) sRGB.
+        palette = PaletteRecord.from_value(
+            {"id": "palette/m_kap_combat_light_01_01_10", "finish": {"secondary": {"specular": [0.205, 0.287, 0.407]}}}
+        )
+        layer = LayerManifestEntry.from_value(
+            {
+                "index": 0,
+                "tint_color": [0.175, 0.175, 0.175],
+                "palette_channel": {"index": 2, "name": "secondary"},
+                "layer_snapshot": {"metallic": 1.0, "specular": [0.55, 0.55, 0.55]},
+            }
+        )
+        result = _layer_palette_metal_specular(layer, palette)
+        for value, expected in zip(result, (0.205 * 0.175, 0.287 * 0.175, 0.407 * 0.175)):
+            self.assertAlmostEqual(value, expected, places=6)
 
     def test_non_metal_or_unrouted_layers_take_none(self) -> None:
         self.assertIsNone(_layer_palette_metal_specular(self._layer("tertiary", 0.0), self.PALETTE))

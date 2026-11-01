@@ -216,10 +216,83 @@ def _all_texture_candidates(submaterial: SubmaterialRecord) -> list[TextureRefer
 
 
 def first_texture_export(submaterial: SubmaterialRecord, roles: tuple[str, ...]) -> str | None:
+    excluded = _pom_decal_paths(submaterial)
     for texture in _all_texture_candidates(submaterial):
-        if texture.role in roles and texture.export_path:
+        if texture.role in roles and texture.export_path and texture.export_path not in excluded:
             return texture.export_path
     return None
+
+
+def _reads_layer_blend_decals(submaterial: SubmaterialRecord) -> bool:
+    """LayerBlend_V2 with `%DECALS`, which draws "diffuse and parallax
+    occlusion decals via 2nd UV set" (the game's `Shaders/LayerBlend_V2.ext`).
+    A skin keeps that UV set in its vertex colour, which `%WEAR_DIRT_AO_VERTEX`
+    makes wear, dirt and AO instead, so with that flag there are none."""
+    if submaterial.shader_family != "LayerBlend_V2":
+        return False
+    tokens = {token.upper() for token in submaterial.decoded_feature_flags.tokens}
+    return "DECALS" in tokens and "WEAR_DIRT_AO_VERTEX" not in tokens
+
+
+@dataclass(frozen=True)
+class PomDecals:
+    """A LayerBlend_V2 material's parallax occlusion decal set (`layer_blend_pom_decals`)."""
+
+    color: TextureReference
+    normal: TextureReference | None
+    specular: TextureReference | None
+    height: TextureReference | None
+    roughness: TextureReference | None
+
+
+POM_DECAL_SLOTS = ("TexSlot1", "TexSlot2", "TexSlot4", "TexSlot8")
+
+
+def layer_blend_pom_decals(submaterial: SubmaterialRecord) -> PomDecals | None:
+    """The parallax occlusion decals of a LayerBlend_V2 `%DECALS` material, or None.
+
+    Beside the plain sheet (TexSlot9) some materials carry a second set in
+    TexSlot1 (colour, alpha = coverage: `*_poms_decals_diffa`), 2 (`_ddna`),
+    4 (`_spec`, the print's F0) and 8 (`_displ`, with `%HEIGHT_MAP`), read
+    through the same second UV set: the Morozov-SH armour's stitching, rivets,
+    vents and shield emblem. The roughness is the one derived from its normal
+    map's gloss. A LayerBlend material has no diffuse of its own, so slot 1
+    is a decal only with `%DECALS`.
+    """
+    if not _reads_layer_blend_decals(submaterial):
+        return None
+    by_slot = {
+        texture.slot: texture
+        for texture in submaterial.texture_slots
+        if texture.slot in POM_DECAL_SLOTS and texture.export_path and not texture.is_virtual
+    }
+    color = by_slot.get("TexSlot1")
+    if color is None:
+        return None
+    normal = by_slot.get("TexSlot2")
+    roughness = None
+    if normal is not None:
+        roughness = next(
+            (
+                texture
+                for texture in submaterial.derived_textures
+                if texture.role == "roughness"
+                and texture.export_path
+                and texture.export_path.replace("_roughness", "") == normal.export_path
+            ),
+            None,
+        )
+    return PomDecals(color, normal, by_slot.get("TexSlot4"), by_slot.get("TexSlot8"), roughness)
+
+
+def _pom_decal_paths(submaterial: SubmaterialRecord) -> set[str]:
+    """Files of the POM decal set: not the material's own base textures (the
+    Morozov-SH core took its stitching normals through UV1 as its surface)."""
+    pom = layer_blend_pom_decals(submaterial)
+    if pom is None:
+        return set()
+    refs = (pom.color, pom.normal, pom.specular, pom.height, pom.roughness)
+    return {ref.export_path for ref in refs if ref is not None and ref.export_path}
 
 
 def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | None]:
@@ -247,18 +320,10 @@ def representative_textures(submaterial: SubmaterialRecord) -> dict[str, str | N
 
 
 def layer_blend_decal_sheet(submaterial: SubmaterialRecord) -> TextureReference | None:
-    """The decal sheet a LayerBlend_V2 material lays over its layers, or None.
-
-    `%DECALS` draws "diffuse and parallax occlusion decals via 2nd UV set"
-    (the game's `Shaders/LayerBlend_V2.ext`); the sheet is the `decal_sheet`
-    texture (TexSlot9). A skin keeps that UV set in its vertex colour, which
-    `%WEAR_DIRT_AO_VERTEX` makes wear, dirt and AO instead, so with that flag
-    the sheet is left out.
-    """
-    if submaterial.shader_family != "LayerBlend_V2":
-        return None
-    tokens = {token.upper() for token in submaterial.decoded_feature_flags.tokens}
-    if "DECALS" not in tokens or "WEAR_DIRT_AO_VERTEX" in tokens:
+    """The decal sheet a LayerBlend_V2 material lays over its layers through
+    the second UV set (`_reads_layer_blend_decals`), or None: the
+    `decal_sheet` texture (TexSlot9)."""
+    if not _reads_layer_blend_decals(submaterial):
         return None
     return next(
         (texture for texture in _all_texture_candidates(submaterial) if texture.role == "decal_sheet" and texture.export_path),
@@ -267,8 +332,9 @@ def layer_blend_decal_sheet(submaterial: SubmaterialRecord) -> TextureReference 
 
 
 def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureReference | None:
+    excluded = _pom_decal_paths(submaterial)
     for texture in _all_texture_candidates(submaterial):
-        if texture.alpha_semantic == "smoothness" and texture.export_path:
+        if texture.alpha_semantic == "smoothness" and texture.export_path and texture.export_path not in excluded:
             return texture
     for layer in submaterial.layer_manifest:
         for texture in layer.texture_slots:
