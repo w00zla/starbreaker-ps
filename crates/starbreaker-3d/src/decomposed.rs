@@ -4043,11 +4043,17 @@ pub(crate) fn mesh_asset_relative_path(
 /// `.blend` names its slots after the material file (`<mtl>_mtl_<name>_0<id>`),
 /// so two exports of one geometry with different materials (paint variants,
 /// the ores on one rock mesh) would overwrite each other in a shared `Data/`.
-/// `None` when the material is named like the geometry or unknown.
+/// `None` when the material is named like the geometry or unknown, and for a
+/// character package's own parts (`Characters/<name>/`, see
+/// `character::package`): nothing shares those, and with the suffix the head
+/// lost the name the package's checks look up.
 fn material_mesh_suffix(geometry_path: &str, material_source: Option<&str>) -> Option<String> {
     fn stem(path: &str) -> &str {
         let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
         file.split_once('.').map_or(file, |(stem, _)| stem)
+    }
+    if geometry_path.starts_with("Characters/") {
+        return None;
     }
     let material_stem = stem(material_source?);
     (!material_stem.is_empty() && !material_stem.eq_ignore_ascii_case(stem(geometry_path)))
@@ -6462,6 +6468,20 @@ mod tests {
             "a material named like its geometry keeps the plain name"
         );
         assert_eq!(material_mesh_suffix("Objects/Ships/hull.cga", None), None);
+    }
+
+    #[test]
+    fn character_package_meshes_keep_their_plain_name() {
+        // A character package's parts live in its own Characters/<name>/
+        // (character::package): nothing shares them, and the head keeps
+        // the name the package and its parity check look up.
+        assert_eq!(
+            material_mesh_suffix(
+                "Characters/masculinedefault/protos_human_male_face_t1_pu_head.skin",
+                Some("Data/objects/characters/human/heads/male/npc/male17/male17_t1_head_material.mtl"),
+            ),
+            None
+        );
     }
 
     #[test]
