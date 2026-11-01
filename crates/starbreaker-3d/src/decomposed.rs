@@ -1274,6 +1274,14 @@ pub(crate) fn write_decomposed_export(
 
     // Export material sidecars for each paint variant and build the paints.json manifest.
     let mut paint_variant_json: Vec<serde_json::Value> = Vec::new();
+    // The root set's own file (a CDF's material when the record names none, as the P4-AR's).
+    let root_source_len = input
+        .root_materials
+        .as_ref()
+        .and_then(|materials| materials.source_path.clone())
+        .or_else(|| (!input.material_path.is_empty()).then(|| input.material_path.clone()))
+        .and_then(|path| load_mtl_cached(p4k, &mut mtl_cache, &path))
+        .map(|source| source.materials.len());
     for variant in &input.paint_variants {
         register_paint_variant_palette(&mut palette_records, variant);
         let Some(palette_id) = variant.palette_id.as_ref() else {
@@ -1295,6 +1303,7 @@ pub(crate) fn write_decomposed_export(
                     &mut mtl_cache,
                 )
             } else {
+                let materials = &paint_variant_materials(materials, input.root_materials.as_ref(), root_source_len);
                 let identity: Vec<u32> = (0..materials.materials.len() as u32).collect();
                 write_material_sidecar(
                     &mut files,
@@ -2651,6 +2660,20 @@ fn write_material_sidecar(
         &sidecar_original_indices,
     );
     insert_json_file(files, relative_path, value)
+}
+
+/// A paint variant's material set: its own submaterials, then those the root
+/// set carries past its source file -- the files of CDF parts with a material
+/// of their own, appended by `entity_export` (the P4-AR's bolt and cover
+/// plate). A paint swaps only the primary file. Without that tail the
+/// variant's sidecar, which the base entity writes first in a batch run, gave
+/// the parts' slots no material.
+fn paint_variant_materials(variant: &MtlFile, root: Option<&MtlFile>, root_source_len: Option<usize>) -> MtlFile {
+    let mut merged = variant.clone();
+    if let (Some(root), Some(source_len)) = (root, root_source_len) {
+        merged.materials.extend(root.materials.iter().skip(source_len).cloned());
+    }
+    merged
 }
 
 fn canonical_sidecar_materials_from_source(
@@ -6564,6 +6587,26 @@ mod tests {
         let mut different = base.clone();
         different.helper_name = Some("screen_b".to_string());
         assert_ne!(ui_render_key(&base), ui_render_key(&different));
+    }
+
+    #[test]
+    fn a_paint_variant_keeps_the_part_materials_appended_to_the_root() {
+        let named = |name: &str| SubMaterial { name: name.into(), ..sample_submaterial() };
+        let file = |names: &[&str]| MtlFile {
+            materials: names.iter().map(|n| named(n)).collect(),
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        // The P4-AR: its file has 2 submaterials here, its bolt's file 1 more, appended.
+        let root = file(&["paint", "glow_mat", "Metal_Bare_01_A"]);
+        let variant = file(&["paint_black", "Anodized_01_A"]);
+        let merged = paint_variant_materials(&variant, Some(&root), Some(2));
+        let names: Vec<&str> = merged.materials.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["paint_black", "Anodized_01_A", "Metal_Bare_01_A"]);
+        // Nothing appended (or the root file unknown): the variant as it is.
+        assert_eq!(paint_variant_materials(&variant, Some(&file(&["paint", "glow_mat"])), Some(2)).materials.len(), 2);
+        assert_eq!(paint_variant_materials(&variant, Some(&root), None).materials.len(), 2);
     }
 
     #[test]
