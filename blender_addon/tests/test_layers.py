@@ -58,6 +58,39 @@ from starbreaker_addon.runtime.importer.builders import (
     _layered_wear_first_non_neutral_tint,
 )
 from starbreaker_addon.runtime.importer.layers import _detail_strength_or_zero, _stencil_override_selection
+from starbreaker_addon.runtime.importer.builders import _layer_palette_metal_specular
+from starbreaker_addon.manifest import LayerManifestEntry, PaletteRecord
+
+
+class PaletteMetalSpecularTests(unittest.TestCase):
+    # Artimex Chairman's Club: bronze_scratched on tertiary, whose tint is near
+    # black (0.007) and whose finish specular is the gold the game shows.
+    PALETTE = PaletteRecord.from_value(
+        {
+            "id": "palette/qrt_specialist_medium_helmet_01_01_04",
+            "tertiary": [0.007, 0.007, 0.007],
+            "finish": {"tertiary": {"specular": [0.73, 0.43, 0.11]}},
+        }
+    )
+
+    @staticmethod
+    def _layer(channel: str | None, metallic: float) -> LayerManifestEntry:
+        return LayerManifestEntry.from_value(
+            {
+                "index": 0,
+                "tint_color": [1.0, 1.0, 1.0],
+                "palette_channel": {"index": 3, "name": channel} if channel else None,
+                "layer_snapshot": {"metallic": metallic, "specular": [0.258, 0.198, 0.065]},
+            }
+        )
+
+    def test_palette_metal_takes_the_channel_finish_specular(self) -> None:
+        self.assertEqual(_layer_palette_metal_specular(self._layer("tertiary", 1.0), self.PALETTE), (0.73, 0.43, 0.11))
+
+    def test_non_metal_or_unrouted_layers_take_none(self) -> None:
+        self.assertIsNone(_layer_palette_metal_specular(self._layer("tertiary", 0.0), self.PALETTE))
+        self.assertIsNone(_layer_palette_metal_specular(self._layer(None, 1.0), self.PALETTE))
+        self.assertIsNone(_layer_palette_metal_specular(self._layer("tertiary", 1.0), None))
 
 
 class LayerDetailTests(unittest.TestCase):

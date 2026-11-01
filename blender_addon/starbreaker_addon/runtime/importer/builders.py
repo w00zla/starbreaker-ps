@@ -168,6 +168,20 @@ def _layer_metal_tint(layer: LayerManifestEntry) -> tuple[float, float, float] |
     return tuple(t * s for t, s in zip(tint, specular))  # type: ignore[return-value]
 
 
+def _layer_palette_metal_specular(
+    layer: LayerManifestEntry, palette: PaletteRecord | None
+) -> tuple[float, float, float] | None:
+    """A metal layer on a palette channel takes that channel's finish
+    specular as its colour (F0), not tint x palette tint: the Artimex
+    Chairman's Club's bronze_scratched sits on tertiary, tint 0.007, and drew
+    black where the game shows gold, its specular (0.73, 0.43, 0.11); the Geist
+    helmet's gun_metal_03 on primary (finish 0.093) drew a black mirror, the
+    game the same dark grey as the ASD Edition."""
+    if layer.palette_channel is None or _layer_snapshot_float(layer, "metallic") < 0.5:
+        return None
+    return palette_finish_specular(palette, layer.palette_channel.name)
+
+
 def _texture_reference_uv_scale(ref: TextureReference) -> tuple[float, float] | None:
     """The slot's authored TexMod TileU/TileV, or None without one."""
     scale = (ref.texture_transform or {}).get("scale")
@@ -2756,13 +2770,16 @@ class BuildersMixin:
             prefix = "Layer%d " % index
             ly = y - index * 400
             tiling = float(layer.uv_tiling or 1.0)
-            image = self._layer_blend_image(nodes, links, layer.diffuse_export_path, tiling, True, x - 300, ly)
+            palette_metal = _layer_palette_metal_specular(layer, palette)
+            image = None
+            if palette_metal is None:
+                image = self._layer_blend_image(nodes, links, layer.diffuse_export_path, tiling, True, x - 300, ly)
             if image is not None:
                 links.new(image.outputs["Color"], _input_socket(group, prefix + "Image"))
-            tint = _layer_metal_tint(layer)
+            tint = palette_metal or _layer_metal_tint(layer)
             if tint is not None:
                 self._set_socket_default(_input_socket(group, prefix + "Tint"), (*tint, 1.0))
-            if layer.palette_channel is not None and palette is not None:
+            if layer.palette_channel is not None and palette is not None and palette_metal is None:
                 palette_socket = self._palette_color_socket(nodes, palette, layer.palette_channel.name, x=x - 300, y=ly - 120)
                 if palette_socket is not None:
                     self._link_color_output(palette_socket, _input_socket(group, prefix + "Palette"))
