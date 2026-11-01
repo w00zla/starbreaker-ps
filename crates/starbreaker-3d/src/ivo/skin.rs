@@ -336,7 +336,6 @@ impl SkinMesh {
 
         let num_verts = info.num_vertices as usize;
         let num_idx = info.num_indices as usize;
-        let mut skin_vertices = false;
 
         while reader.remaining() >= 4 {
             let stream_type = reader.read_u32()?;
@@ -378,7 +377,6 @@ impl SkinMesh {
                     // 16 = SNorm i16×3 positions + pad(2) + RGBA(4) + UV half×2(4)
                     // 20 = float f32×3 positions + RGBA(4) + UV half×2(4)
                     // The on-disk color bytes are stored as BGRA.
-                    skin_vertices = stream_type == stream_type::IVOVERTSUVS;
                     if element_size == 16 {
                         let verts = reader.read_slice::<RawQuantizedVertex>(num_verts)?;
                         positions = Some(PositionData::Quantized(
@@ -503,17 +501,6 @@ impl SkinMesh {
             }
         }
 
-        // Skin vertices without a second-UV stream carry that set in their colour
-        // (`dequant::decode_colour_uv2`); each value is k/1024, exact in a half.
-        if secondary_uvs.is_none() && skin_vertices {
-            secondary_uvs = colors.as_ref().map(|colors| {
-                colors
-                    .iter()
-                    .map(|&rgba| crate::dequant::decode_colour_uv2(rgba).map(|x| half::f16::from_f32(x).to_bits()))
-                    .collect()
-            });
-        }
-
         Ok(DataStreams {
             positions: positions.ok_or(Error::MissingChunk {
                 chunk_type: stream_type::IVOVERTSUVS,
@@ -591,15 +578,15 @@ mod tests {
     }
 
     #[test]
-    fn skin_vertices_carry_the_second_uv_in_their_colour() {
-        // RGBA (218, 149, 114) on the ASD helmet's visor, the plain colour (160, 21, 254) beside it.
+    fn the_colour_stays_a_colour_until_a_material_reads_it_as_second_uvs() {
+        // RGBA (218, 149, 114) on the ASD helmet's visor: whether it is a packed second UV
+        // set depends on the material (`MtlFile::reads_colour_second_uvs`), not the stream.
         let mut bytes = Vec::new();
         skin_vertices(&mut bytes, [[114, 149, 218, 255], [254, 21, 160, 255], [254, 21, 160, 255]]);
         indices(&mut bytes);
         let streams = read(&bytes);
-        let uv2: Vec<[f32; 2]> = streams.secondary_uvs.unwrap().into_iter().map(decode_half2).collect();
-        assert_eq!(uv2[0], [937.0 / 1024.0, 882.0 / 1024.0]);
-        assert_eq!(uv2[1], [1.0 / 1024.0, 1022.0 / 1024.0]);
+        assert!(streams.secondary_uvs.is_none());
+        assert_eq!(streams.colors.unwrap()[0], [218, 149, 114, 255]);
     }
 
     #[test]

@@ -1063,6 +1063,14 @@ pub(crate) fn load_single_mesh(
     }
 
     let mut mesh = mesh;
+    // A mesh without a second-UV stream keeps that set in its vertex colour, for
+    // the LayerBlend decals that read it (`MtlFile::reads_colour_second_uvs`).
+    if mesh.secondary_uvs.is_none() && mtl_file.as_ref().is_some_and(mtl::MtlFile::reads_colour_second_uvs) {
+        mesh.secondary_uvs = mesh
+            .colors
+            .as_ref()
+            .map(|colors| colors.iter().map(|&rgba| crate::dequant::decode_colour_uv2(rgba)).collect());
+    }
     if let Some(mtl) = mtl_file.as_ref() {
         let metadata_bytes = p4k
             .entry_case_insensitive(&p4k_geom_path)

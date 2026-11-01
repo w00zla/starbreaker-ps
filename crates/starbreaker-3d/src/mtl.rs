@@ -105,6 +105,24 @@ pub struct MtlFile {
     pub material_set: MaterialSetAuthoredData,
 }
 
+impl MtlFile {
+    /// Whether a mesh drawn with this set reads its second UV set from the
+    /// vertex colour when it has no second-UV stream: a LayerBlend_V2
+    /// submaterial draws `%DECALS` "via 2nd UV set" (`Shaders/LayerBlend_V2.ext`),
+    /// packed into the colour (`dequant::decode_colour_uv2`) -- the ASD Geist
+    /// helmet's visor logo. With `%WEAR_DIRT_AO_VERTEX` the colour is wear, and
+    /// a hull's HardSurface `%VERTCOLORS` are real colours: decoded, a Hull A
+    /// cargo plate's UV2 jumped across half the sheet per triangle.
+    pub fn reads_colour_second_uvs(&self) -> bool {
+        self.materials.iter().any(|material| {
+            let tokens = || material.string_gen_mask.split('%').map(str::trim);
+            material.shader == "LayerBlend_V2"
+                && tokens().any(|t| t.eq_ignore_ascii_case("DECALS"))
+                && !tokens().any(|t| t.eq_ignore_ascii_case("WEAR_DIRT_AO_VERTEX"))
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SubMaterial {
     pub name: String,
@@ -1252,6 +1270,23 @@ mod tests {
             authored_textures: Vec::new(),
             authored_child_blocks: Vec::new(),
         }
+    }
+
+    #[test]
+    fn layer_blend_decals_read_the_second_uv_set_from_the_colour() {
+        let set = |subs: Vec<SubMaterial>| MtlFile {
+            materials: subs,
+            source_path: None,
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        // The ASD Geist helmet: LayerBlend_V2 with a decal sheet.
+        let helmet = dummy_submaterial("LayerBlend_V2", "%NORMAL_MAP%BLEND_MAP%DECALS");
+        assert!(set(vec![dummy_submaterial("LayerBlend_V2", "%BLEND_MAP"), helmet.clone()]).reads_colour_second_uvs());
+        // A hull's HardSurface stencil with real vertex colours, wear-coloured LayerBlend, no decals at all.
+        assert!(!set(vec![dummy_submaterial("HardSurface", "%STENCIL_MAP%VERTCOLORS")]).reads_colour_second_uvs());
+        assert!(!set(vec![dummy_submaterial("LayerBlend_V2", "%BLEND_MAP%DECALS%WEAR_DIRT_AO_VERTEX")]).reads_colour_second_uvs());
+        assert!(!set(vec![dummy_submaterial("Illum", "%DECAL")]).reads_colour_second_uvs());
     }
 
     #[test]
