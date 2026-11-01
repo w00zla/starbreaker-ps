@@ -329,11 +329,54 @@ def _organic_base_tint(submaterial: SubmaterialRecord) -> tuple[float, float, fl
 
     Its diffuse is grey; the colour is the first layer's ``TintColor`` (the
     crystal, the second layer is grey sand), which the principled build would
-    otherwise drop.
+    otherwise drop, times that layer material's own ``Diffuse``: Beradom's
+    tint is white, its violet is crystal_beradom.mtl's Diffuse (0.15, 0.125,
+    0.342), and it rendered grey. Doubled for the grey diffuse, a detail map
+    (sRGB ~100): at x1 every mineral came out darker than the game's
+    inventory tiles.
     """
     if submaterial.shader_family != "Organic" or not submaterial.layer_manifest:
         return None
-    return submaterial.layer_manifest[0].tint_color
+    layer = submaterial.layer_manifest[0]
+    tint = layer.tint_color or (1.0, 1.0, 1.0)
+    diffuse = layer.layer_snapshot.get("diffuse") or (1.0, 1.0, 1.0)
+    return tuple(2.0 * float(t) * float(d) for t, d in zip(tint, diffuse))  # type: ignore[return-value]
+
+
+def _layer_blend_wear_texture(submaterial: SubmaterialRecord) -> TextureReference | None:
+    """The wear pattern of a ``WEAR_LAYER`` material: its layer materials'
+    ``TexSlot8`` blend map. The ore thumbnails (ui_ore_*_1_a, HardSurface)
+    have no wear mask of their own; their ui_ore_rock_*.mtl layers carry
+    ore_raw_1_a_blend.tif there, the ore's veins (Hephaestanite's orange in
+    the game's inventory tiles), and rendered as bare rock without it.
+    The caller uses it only when the material has no mask itself.
+    """
+    if "WEAR_LAYER" not in submaterial.decoded_feature_flags.tokens:
+        return None
+    for layer in submaterial.layer_manifest:
+        texture = _layer_texture_reference(layer, slots=("TexSlot8",))
+        if texture is not None and texture.export_path:
+            return texture
+    return None
+
+
+def _organic_specular(submaterial: SubmaterialRecord) -> tuple[tuple[float, float, float], float] | None:
+    """Specular tint and level of an ``Organic`` material: its first layer
+    material's ``Specular``, the crystal's coloured reflection (Hadanite
+    0.254/0.141/0.212). The tint is that colour at full brightness; the level
+    is its brightest channel against the dielectric 0.04 (0.5 = 0.04), capped
+    at 1.
+    """
+    if submaterial.shader_family != "Organic" or not submaterial.layer_manifest:
+        return None
+    specular = submaterial.layer_manifest[0].layer_snapshot.get("specular")
+    if not specular:
+        return None
+    brightest = max(float(s) for s in specular[:3])
+    if brightest <= 0.0:
+        return None
+    tint = tuple(float(s) / brightest for s in specular[:3])
+    return tint, min(1.0, 0.5 * brightest / 0.04)  # type: ignore[return-value]
 
 
 def _contract_emission_strength(

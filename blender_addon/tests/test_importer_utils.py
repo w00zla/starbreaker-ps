@@ -69,6 +69,8 @@ from starbreaker_addon.runtime.record_utils import (
     _mesh_decal_authored_emission_strength,
     _mesh_decal_diffuse_multipliers,
     _organic_base_tint,
+    _organic_specular,
+    _layer_blend_wear_texture,
 )
 from starbreaker_addon.runtime.importer.utils import (
     _canonical_source_name,
@@ -432,7 +434,8 @@ class TestConfigureMaterialRefraction(unittest.TestCase):
 
 class TestOrganicBaseTint(unittest.TestCase):
     def test_organic_takes_its_first_layer_tint(self) -> None:
-        # Hadanite: the crystal colour is Layer1's TintColor, Layer2 is grey sand.
+        # Hadanite: the crystal colour is Layer1's TintColor, Layer2 is grey sand;
+        # doubled for the grey detail-map diffuse.
         hadanite = SubmaterialRecord.from_value(
             {
                 "shader_family": "Organic",
@@ -442,7 +445,51 @@ class TestOrganicBaseTint(unittest.TestCase):
                 ],
             }
         )
-        self.assertEqual(_organic_base_tint(hadanite), (0.37, 0.21, 0.31))
+        for got, want in zip(_organic_base_tint(hadanite), (0.74, 0.42, 0.62)):
+            self.assertAlmostEqual(got, want)
+
+    def test_organic_tint_includes_the_layer_material_diffuse(self) -> None:
+        # Beradom: tint white, the violet is crystal_beradom.mtl's own Diffuse.
+        beradom = SubmaterialRecord.from_value(
+            {
+                "shader_family": "Organic",
+                "layer_manifest": [
+                    {
+                        "index": 0,
+                        "name": "Layer1",
+                        "tint_color": [1.0, 1.0, 1.0],
+                        "layer_snapshot": {"diffuse": [0.15, 0.125, 0.342]},
+                    },
+                ],
+            }
+        )
+        for got, want in zip(_organic_base_tint(beradom), (0.30, 0.25, 0.684)):
+            self.assertAlmostEqual(got, want)
+
+    def test_organic_specular_is_the_layer_material_specular(self) -> None:
+        # Hadanite's crystal reflects pink: Specular 0.254/0.141/0.212.
+        hadanite = SubmaterialRecord.from_value(
+            {
+                "shader_family": "Organic",
+                "layer_manifest": [
+                    {"index": 0, "name": "Layer1", "layer_snapshot": {"specular": [0.254, 0.141, 0.212]}},
+                ],
+            }
+        )
+        tint, level = _organic_specular(hadanite)
+        for got, want in zip(tint, (1.0, 0.141 / 0.254, 0.212 / 0.254)):
+            self.assertAlmostEqual(got, want)
+        self.assertAlmostEqual(level, 1.0)
+        beradom = SubmaterialRecord.from_value(
+            {
+                "shader_family": "Organic",
+                "layer_manifest": [
+                    {"index": 0, "name": "Layer1", "layer_snapshot": {"specular": [0.032, 0.014, 0.072]}},
+                ],
+            }
+        )
+        self.assertAlmostEqual(_organic_specular(beradom)[1], 0.9)
+        self.assertIsNone(_organic_specular(SubmaterialRecord.from_value({"shader_family": "Organic"})))
 
     def test_other_families_get_no_organic_tint(self) -> None:
         hull = SubmaterialRecord.from_value(
@@ -452,6 +499,45 @@ class TestOrganicBaseTint(unittest.TestCase):
 
     def test_organic_without_layers_gets_no_tint(self) -> None:
         self.assertIsNone(_organic_base_tint(SubmaterialRecord.from_value({"shader_family": "Organic"})))
+
+
+class TestLayerBlendWearTexture(unittest.TestCase):
+    @staticmethod
+    def _ore(mask_slot: bool = False) -> SubmaterialRecord:
+        # ui_ore_hephaestanite_1_a: WEAR_LAYER, no mask of its own; both layer
+        # materials (ui_ore_rock_*.mtl) carry ore_raw_1_a_blend.tif as TexSlot8.
+        blend = {
+            "slot": "TexSlot8",
+            "role": "unknown",
+            "export_kind": "source",
+            "export_path": "Data/Objects/UI/Crafting/icons/textures/ore_raw_1_a_blend_TEX2.png",
+        }
+        slots = [{"slot": "TexSlot5", "role": "wear_mask", "export_path": "Data/x/wear_TEX2.png"}] if mask_slot else []
+        return SubmaterialRecord.from_value(
+            {
+                "shader_family": "HardSurface",
+                "decoded_feature_flags": {"tokens": ["WEAR_LAYER"]},
+                "texture_slots": slots,
+                "layer_manifest": [
+                    {"index": 0, "name": "Primary", "texture_slots": [blend]},
+                    {"index": 1, "name": "Wear", "texture_slots": [blend]},
+                ],
+            }
+        )
+
+    def test_wear_layer_without_mask_takes_the_layer_blend_map(self) -> None:
+        texture = _layer_blend_wear_texture(self._ore())
+        self.assertIsNotNone(texture)
+        self.assertTrue(texture.export_path.endswith("ore_raw_1_a_blend_TEX2.png"))
+
+    def test_material_without_wear_layer_takes_none(self) -> None:
+        record = SubmaterialRecord.from_value(
+            {
+                "shader_family": "HardSurface",
+                "layer_manifest": [{"index": 0, "texture_slots": [{"slot": "TexSlot8", "export_path": "a.png"}]}],
+            }
+        )
+        self.assertIsNone(_layer_blend_wear_texture(record))
 
 
 class TestContractEmissionStrength(unittest.TestCase):

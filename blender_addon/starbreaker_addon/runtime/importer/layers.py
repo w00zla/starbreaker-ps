@@ -36,6 +36,7 @@ from ..record_utils import (
     _authored_attribute_triplet,
     _float_layer_public_param,
     _float_public_param,
+    _layer_blend_wear_texture,
     _layer_snapshot_float,
     _layer_snapshot_triplet,
     _layer_texture_reference,
@@ -865,6 +866,10 @@ class LayersMixin:
         mask_node = None
         if not has_vertex_colors:
             mask_node = self._image_node(nodes, textures["mask"], x=x - 220, y=y, is_color=False)
+        if not has_vertex_colors and mask_node is None:
+            blend = _layer_blend_wear_texture(submaterial)
+            if blend is not None:
+                return self._layer_blend_wear_socket(nodes, links, blend.export_path, x=x, y=y)
         if not has_vertex_colors and mask_node is None and wear_base <= 0.0:
             return None
 
@@ -888,6 +893,36 @@ class LayersMixin:
             self._link_group_input(links, mask_node.outputs[0], group_node, "Wear Mask")
 
         return _output_socket(group_node, "Wear Factor")
+
+    def _layer_blend_wear_socket(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        path: str | None,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        """Wear factor from a layer blend map (``_layer_blend_wear_texture``):
+        its red over 0.6-0.8, smoothstep. An authored pattern, not dynamic
+        wear, so the scene's wear strength does not scale it. The range is
+        fitted to the game's inventory tiles: Hephaestanite's orange covered
+        about half the rock at 0.3-0.7 and only flecks at 0.7-0.9, the game
+        shows patches in between.
+        """
+        image = self._image_node(nodes, path, x=x - 520, y=y, is_color=False)
+        if image is None:
+            return None
+        separate = nodes.new("ShaderNodeSeparateColor")
+        separate.location = (x - 260, y)
+        links.new(image.outputs[0], separate.inputs[0])
+        sharpen = nodes.new("ShaderNodeMapRange")
+        sharpen.location = (x, y)
+        sharpen.interpolation_type = "SMOOTHSTEP"
+        sharpen.inputs["From Min"].default_value = 0.6
+        sharpen.inputs["From Max"].default_value = 0.8
+        links.new(_output_socket(separate, "Red"), sharpen.inputs["Value"])
+        return sharpen.outputs["Result"]
 
     def _layered_damage_factor_socket(
         self,

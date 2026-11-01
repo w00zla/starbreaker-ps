@@ -57,6 +57,7 @@ from ..record_utils import (
     _mean_triplet,
     _optional_float_public_param,
     _organic_base_tint,
+    _organic_specular,
     _public_param_triplet,
     _resolve_public_param_default,
     _resolved_submaterial_palette_color,
@@ -2842,6 +2843,15 @@ class BuildersMixin:
         if organic_tint is not None and base_socket is not None:
             tint_socket = self._value_color_socket(nodes, (*organic_tint, 1.0), x=40, y=300)
             base_socket = self._multiply_color_socket(nodes, links, base_socket, tint_socket, x=220, y=140)
+        organic_specular = _organic_specular(submaterial)
+        if organic_specular is not None:
+            specular_tint, specular_level = organic_specular
+            tint_input = _input_socket(principled, "Specular Tint")
+            if tint_input is not None:
+                tint_input.default_value = (*specular_tint, 1.0)
+            level_input = _input_socket(principled, "Specular IOR Level")
+            if level_input is not None:
+                level_input.default_value = specular_level
 
         if base_socket is not None:
             links.new(base_socket, _input_socket(principled, "Base Color"))
