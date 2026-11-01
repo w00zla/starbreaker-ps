@@ -1285,7 +1285,14 @@ class MaterialsMixin:
 
 
 
-    def _configure_material(self, material: bpy.types.Material, *, blend_method: str, shadow_method: str) -> None:
+    def _configure_material(
+        self,
+        material: bpy.types.Material,
+        *,
+        blend_method: str,
+        shadow_method: str,
+        refraction: bool = False,
+    ) -> None:
         if hasattr(material, "blend_method"):
             try:
                 material.blend_method = blend_method
@@ -1298,6 +1305,13 @@ class MaterialsMixin:
             #   OPAQUE / CLIP / HASHED -> DITHERED
             #   BLEND                  -> BLENDED
             method = "BLENDED" if blend_method == "BLEND" else "DITHERED"
+            if refraction:
+                # Transmission (GlassPBR): blended, EEVEE refracts only the
+                # world and visors render flat grey; raytraced refraction
+                # sees the geometry behind and needs dithered.
+                method = "DITHERED"
+                if hasattr(material, "use_raytrace_refraction"):
+                    material.use_raytrace_refraction = True
             try:
                 material.surface_render_method = method
             except (AttributeError, TypeError):

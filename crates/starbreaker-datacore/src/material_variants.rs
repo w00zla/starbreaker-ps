@@ -11,6 +11,8 @@
 //! - [`item_tags`]: an item record's `AttachDef.Tags`.
 //! - [`MaterialNode`] / [`material_node`]: the material tree and its
 //!   depth-first, first-match resolution against a tag context.
+//! - [`entity_material_path`] / [`record_material_path`]: an entity's material,
+//!   the material node's or else the geometry's own.
 
 use crate::database::Database;
 use crate::query::value::Value;
@@ -104,6 +106,26 @@ pub fn material_node(db: &Database, record: &Record) -> Option<MaterialNode> {
         .next()
 }
 
+/// An entity's material: its [`MaterialNode`] resolved against `context`,
+/// else the geometry's own (`Geometry.Geometry.Material`).
+/// Items such as paint editions of backpacks name their material only in the
+/// node; without it they fell back to the mesh's MtlName (the base look, or
+/// a file that does not exist). Where both name one, the node is the item's
+/// own: outlaw_legacy_armor_light_core_01_08_01's geometry still names the
+/// base record's `_01_01_01.mtl`, its node `_01_08.mtl`.
+pub fn entity_material_path(geometry_material: &str, node: Option<&MaterialNode>, context: &[String]) -> String {
+    node.and_then(|n| n.resolve(context))
+        .filter(|path| !path.is_empty())
+        .unwrap_or(geometry_material)
+        .to_owned()
+}
+
+/// [`entity_material_path`] for a record: its material node resolved against
+/// `context`, else its geometry material.
+pub fn record_material_path(db: &Database, record: &Record, geometry_material: &str, context: &[String]) -> String {
+    entity_material_path(geometry_material, material_node(db, record).as_ref(), context)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +153,34 @@ mod tests {
         assert_eq!(tree.resolve(&ctx(&["Female", "scalpVHair_36"])), Some("f_hair_36.mtl"));
         assert_eq!(tree.resolve(&ctx(&["male", "SCALPVHAIR_36"])), Some("m_hair_36.mtl"), "case-insensitive");
         assert_eq!(tree.resolve(&ctx(&["Female"])), None, "no variant, no material");
+    }
+
+    #[test]
+    fn material_node_supplies_an_entity_material_the_geometry_leaves_empty() {
+        // Arden-CL Backpack Elysium: SGeometryResourceParams.Geometry names no
+        // material; its Material node names mtl_var/rrs_combat_light_backpack_02_01.mtl.
+        let node_tree = node("", "backpack/rrs/mtl_var/rrs_combat_light_backpack_02_01.mtl", vec![]);
+        assert_eq!(
+            entity_material_path("", Some(&node_tree), &[]),
+            "backpack/rrs/mtl_var/rrs_combat_light_backpack_02_01.mtl"
+        );
+        assert_eq!(entity_material_path("", None, &[]), "");
+        assert_eq!(entity_material_path("geometry.mtl", None, &[]), "geometry.mtl");
+        let empty_node = node("", "", vec![node("Female", "f.mtl", vec![])]);
+        assert_eq!(entity_material_path("geometry.mtl", Some(&empty_node), &[]), "geometry.mtl", "a node that resolves to nothing leaves the geometry's");
+        let tagged = node("", "", vec![node("Male", "m.mtl", vec![])]);
+        assert_eq!(entity_material_path("", Some(&tagged), &["Male".to_string()]), "m.mtl");
+    }
+
+    #[test]
+    fn material_node_wins_over_the_geometry_material() {
+        // outlaw_legacy_armor_light_core_01_08_01: the geometry still names the
+        // base record's m_..._01_01_01.mtl, the node its own m_..._01_08.mtl.
+        let node_tree = node("", "m_outlaw_legacy_light_core_01_08.mtl", vec![]);
+        assert_eq!(
+            entity_material_path("m_outlaw_legacy_light_core_01_01_01.mtl", Some(&node_tree), &[]),
+            "m_outlaw_legacy_light_core_01_08.mtl"
+        );
     }
 
     #[test]

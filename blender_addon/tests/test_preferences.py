@@ -19,7 +19,7 @@ def _load_preference_gates() -> tuple:
     import ast as ast_mod
 
     ui_path = ADDON_ROOT / "starbreaker_addon" / "ui.py"
-    source = ui_path.read_text()
+    source = ui_path.read_text(encoding="utf-8")
     tree = ast_mod.parse(source)
 
     namespace: dict = {"PROP_PACKAGE_ROOT": "starbreaker_package_root"}

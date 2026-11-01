@@ -11,8 +11,14 @@
 > - **Upstream merged in on top:** skinning (`mesh_rig::Skin`, the only skin representation here), character and armour-set
 >   export, `--geometry-tag`, audio, UI, the MCP server and upstream's fixes. Where both sides solved the same problem, the item
 >   path keeps the fleetyards behaviour.
-> - **Blender add-on:** the fleetyards one, unchanged. Both sides rebuilt the decal system across several modules and a mix did
+> - **Blender add-on:** the fleetyards one. Both sides rebuilt the decal system across several modules and a mix did
 >   not run, so upstream's add-on additions (skin, hair, screens, control-only POM decals) are not in this fork.
+> - **Own changes (qm.2):** `entity export-batch` (many entities per P4k/DataCore load, JSON lines out, worn fallback,
+>   `--icon-files`); an entity's material from its `Material` node (`SMaterialNodeParams`) when the geometry names
+>   none; item mesh files carry their material in the name, so variants share one `Data/` tree. Add-on: slot names
+>   with an authored trailing space match their submaterial; emission strength is `Glow`, not the `Emissive`
+>   colour; `Organic` takes its first layer's tint; `GlassPBR` gets raytraced refraction; `blender -b` builds the
+>   materials on load.
 > - **Version** `0.3.2-qm.n`, no releases: build with `cargo build --release -p starbreaker`.
 >
 > Not affiliated with either project; problems with this fork belong here, not upstream. Everything below is the original

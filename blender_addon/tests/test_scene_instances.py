@@ -138,7 +138,7 @@ def _load_orchestration() -> types.ModuleType:
     utils_stub._unique_submaterials_by_name = lambda *args, **kwargs: []
     sys.modules["sb_scene_test_runtime.importer.utils"] = utils_stub
 
-    source = (ADDON_ROOT / "runtime" / "importer" / "orchestration.py").read_text()
+    source = (ADDON_ROOT / "runtime" / "importer" / "orchestration.py").read_text(encoding="utf-8")
     source = source.replace("from ...", "from sb_scene_test_addon.")
     source = source.replace("from ..constants import", "from sb_scene_test_runtime.constants import")
     source = source.replace("from ..package_ops import", "from sb_scene_test_runtime.package_ops import")

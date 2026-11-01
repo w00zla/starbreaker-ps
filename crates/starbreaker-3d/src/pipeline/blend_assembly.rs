@@ -858,12 +858,13 @@ pub fn write_decomposed_export_blend(
     let mut mesh_data_map: HashMap<String, MeshDataEntry> = HashMap::new();
     let mut child_mesh_data_map: HashMap<String, MeshDataEntry> = HashMap::new();
     
-    let root_mesh_asset = crate::decomposed::mesh_asset_relative_path(
+    let root_mesh_asset = crate::decomposed::item_mesh_asset_relative_path(
         p4k,
         &input.geometry_path,
         &input.entity_name,
         opts.lod_level,
         opts.format,
+        input.root_materials.as_ref().and_then(|mtl| mtl.source_path.as_deref()),
     );
     let root_material_view = crate::decomposed::build_decomposed_material_view(
         &input.root_mesh,
@@ -880,12 +881,13 @@ pub fn write_decomposed_export_blend(
     });
     
     for child in &input.children {
-        let mesh_asset = crate::decomposed::mesh_asset_relative_path(
+        let mesh_asset = crate::decomposed::item_mesh_asset_relative_path(
             p4k,
             &child.geometry_path,
             &child.entity_name,
             opts.lod_level,
             opts.format,
+            child.materials.as_ref().and_then(|mtl| mtl.source_path.as_deref()),
         );
         let child_material_view = crate::decomposed::build_decomposed_material_view(
             &child.mesh,

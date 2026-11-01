@@ -144,7 +144,7 @@ def _load_package_ops() -> types.ModuleType:
     spec.loader.exec_module(constants)
     sys.modules["sb_anim_test_runtime.constants"] = constants
 
-    source = (ADDON_ROOT / "runtime" / "package_ops.py").read_text()
+    source = (ADDON_ROOT / "runtime" / "package_ops.py").read_text(encoding="utf-8")
     source = source.replace("from ..manifest import", "from sb_anim_test_addon.manifest import")
     source = source.replace("from ..palette import", "from sb_anim_test_addon.palette import")
     source = source.replace("from .constants import", "from sb_anim_test_runtime.constants import")

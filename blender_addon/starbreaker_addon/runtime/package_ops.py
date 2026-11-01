@@ -645,6 +645,8 @@ def _material_slot_can_refresh(
 
 
 def _canonical_source_name(name: str) -> str:
+    # Stripped like the submaterial names it is looked up against: .mtl files may
+    # author a name with a trailing space ("ore_hephaestanite ").
     if len(name) > 4 and name[-4] == "." and name[-3:].isdigit():
         name = name[:-4]
     if "_mtl_" in name:
@@ -660,7 +662,7 @@ def _canonical_source_name(name: str) -> str:
         name = name.split("__", 1)[0]
     if "#" in name:
         name = name.split("#", 1)[0]
-    return name
+    return name.strip()
 
 
 def _slot_mapping_for_object(obj: bpy.types.Object) -> list[int | None] | None:

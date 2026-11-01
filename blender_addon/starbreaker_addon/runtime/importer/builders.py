@@ -47,7 +47,7 @@ from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sock
 from ..package_ops import _string_prop
 from ..record_utils import (
     _authored_attribute_triplet,
-    _emissive_opacity_factor,
+    _contract_emission_strength,
     _float_authored_attribute,
     _float_public_param,
     _hard_surface_angle_shift_enabled,
@@ -56,6 +56,7 @@ from ..record_utils import (
     _matching_texture_reference,
     _mean_triplet,
     _optional_float_public_param,
+    _organic_base_tint,
     _public_param_triplet,
     _resolve_public_param_default,
     _resolved_submaterial_palette_color,
@@ -1292,14 +1293,10 @@ class BuildersMixin:
                 surface_shader = mix.outputs[0]
 
         emissive_triplet = _authored_emissive_triplet(submaterial)
-        emissive_strength = max(
-            _mean_triplet(emissive_triplet) or 0.0,
-            _float_authored_attribute(submaterial, "Glow"),
-        ) * _emissive_opacity_factor(submaterial)
+        emissive_texture_path = self._texture_export_path(submaterial, "emissive")
+        emissive_strength = _contract_emission_strength(submaterial, emissive_texture_path=emissive_texture_path)
         if emissive_strength > 0.0 and not group_handles_emission:
-            emissive_color_path = self._texture_export_path(submaterial, "emissive") or representative_textures(
-                submaterial
-            ).get("base_color")
+            emissive_color_path = emissive_texture_path or representative_textures(submaterial).get("base_color")
             emissive_color_node = self._image_node(nodes, emissive_color_path, x=-220, y=y, is_color=True)
             emissive_color_output = emissive_color_node.outputs[0] if emissive_color_node is not None else None
             if emissive_color_output is None and emissive_triplet is not None:
@@ -1364,7 +1361,12 @@ class BuildersMixin:
                     location=(-760, 320),
                 )
 
-        self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+        self._configure_material(
+            material,
+            blend_method=plan.blend_method,
+            shadow_method=plan.shadow_method,
+            refraction=plan.uses_transmission,
+        )
         return True
 
     def _build_hard_surface_material(
@@ -2836,6 +2838,10 @@ class BuildersMixin:
         if base_socket is None and palette is not None and plan.uses_palette:
             primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
             base_socket = primary
+        organic_tint = _organic_base_tint(submaterial)
+        if organic_tint is not None and base_socket is not None:
+            tint_socket = self._value_color_socket(nodes, (*organic_tint, 1.0), x=40, y=300)
+            base_socket = self._multiply_color_socket(nodes, links, base_socket, tint_socket, x=220, y=140)
 
         if base_socket is not None:
             links.new(base_socket, _input_socket(principled, "Base Color"))
@@ -2921,7 +2927,12 @@ class BuildersMixin:
 
         self._wire_surface_shader_to_output(nodes, links, surface_shader, output, plan, submaterial)
 
-        self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+        self._configure_material(
+            material,
+            blend_method=plan.blend_method,
+            shadow_method=plan.shadow_method,
+            refraction=plan.uses_transmission,
+        )
 
     def _build_glass_material(
         self,
@@ -2974,7 +2985,12 @@ class BuildersMixin:
         surface = _output_socket(shader_group, "Shader")
         self._wire_surface_shader_to_output(nodes, links, surface, output, plan, submaterial)
 
-        self._configure_material(material, blend_method=plan.blend_method, shadow_method=plan.shadow_method)
+        self._configure_material(
+            material,
+            blend_method=plan.blend_method,
+            shadow_method=plan.shadow_method,
+            refraction=plan.uses_transmission,
+        )
 
     # ------------------------------------------------------------------
     # Option E2-Lite: per-(decal, host-channel) clones so each decal

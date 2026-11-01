@@ -6,6 +6,7 @@ mod cryxml;
 mod dcb;
 mod dds;
 mod entity;
+mod entity_batch;
 mod error;
 mod glb;
 mod nmc;

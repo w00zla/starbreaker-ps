@@ -64,9 +64,11 @@ from starbreaker_addon.manifest import MaterialSidecar, SubmaterialRecord
 from starbreaker_addon.material_contract import ContractInput, ShaderGroupContract
 from starbreaker_addon.runtime.importer.materials import MaterialsMixin
 from starbreaker_addon.runtime.record_utils import (
+    _contract_emission_strength,
     _emissive_opacity_factor,
     _mesh_decal_authored_emission_strength,
     _mesh_decal_diffuse_multipliers,
+    _organic_base_tint,
 )
 from starbreaker_addon.runtime.importer.utils import (
     _canonical_source_name,
@@ -145,6 +147,22 @@ class TestCanonicalSourceName(unittest.TestCase):
         self.assertEqual(
             _canonical_source_name("ship_mtl_screen_1x1_10"),
             "screen_1x1",
+        )
+
+    def test_native_blend_material_slot_drops_authored_trailing_space(self) -> None:
+        # The .mtl names the submaterial "ore_hephaestanite " (trailing space); the
+        # by-name lookups key on the stripped submaterial name, so the slot must too.
+        self.assertEqual(
+            _canonical_source_name("ui_ore_hephaestanite_1_a_mtl_ore_hephaestanite _00"),
+            "ore_hephaestanite",
+        )
+
+    def test_slot_with_trailing_space_maps_to_its_submaterial(self) -> None:
+        sidecar = _make_sidecar((1, "ore_hephaestanite "))
+        by_name = _unique_submaterials_by_name(sidecar)
+        self.assertIs(
+            by_name.get(_canonical_source_name("ui_ore_hephaestanite_1_a_mtl_ore_hephaestanite _00")),
+            sidecar.submaterials[0],
         )
 
 
@@ -385,6 +403,95 @@ class TestEmissiveOpacityFactor(unittest.TestCase):
             {"shader_family": "Illum", "authored_attributes": [{"name": "Emissive", "value": "1,1,1"}]}
         )
         self.assertEqual(_emissive_opacity_factor(hull), 1.0)
+
+
+class TestConfigureMaterialRefraction(unittest.TestCase):
+    def _material(self) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            blend_method="OPAQUE",
+            surface_render_method="DITHERED",
+            shadow_method="OPAQUE",
+            use_backface_culling=True,
+            use_raytrace_refraction=False,
+        )
+
+    def test_refracting_material_uses_raytraced_refraction(self) -> None:
+        # GlassPBR is pure transmission: blended, EEVEE refracts only the world
+        # and visors render flat grey; raytraced refraction needs dithered.
+        material = self._material()
+        _MaterialSocketProbe()._configure_material(material, blend_method="BLEND", shadow_method="HASHED", refraction=True)
+        self.assertTrue(material.use_raytrace_refraction)
+        self.assertEqual(material.surface_render_method, "DITHERED")
+
+    def test_blended_material_without_refraction_stays_blended(self) -> None:
+        material = self._material()
+        _MaterialSocketProbe()._configure_material(material, blend_method="BLEND", shadow_method="NONE")
+        self.assertFalse(material.use_raytrace_refraction)
+        self.assertEqual(material.surface_render_method, "BLENDED")
+
+
+class TestOrganicBaseTint(unittest.TestCase):
+    def test_organic_takes_its_first_layer_tint(self) -> None:
+        # Hadanite: the crystal colour is Layer1's TintColor, Layer2 is grey sand.
+        hadanite = SubmaterialRecord.from_value(
+            {
+                "shader_family": "Organic",
+                "layer_manifest": [
+                    {"index": 0, "name": "Layer1", "tint_color": [0.37, 0.21, 0.31]},
+                    {"index": 1, "name": "Layer2", "tint_color": [0.22, 0.22, 0.22]},
+                ],
+            }
+        )
+        self.assertEqual(_organic_base_tint(hadanite), (0.37, 0.21, 0.31))
+
+    def test_other_families_get_no_organic_tint(self) -> None:
+        hull = SubmaterialRecord.from_value(
+            {"shader_family": "HardSurface", "layer_manifest": [{"index": 0, "tint_color": [0.5, 0.5, 0.5]}]}
+        )
+        self.assertIsNone(_organic_base_tint(hull))
+
+    def test_organic_without_layers_gets_no_tint(self) -> None:
+        self.assertIsNone(_organic_base_tint(SubmaterialRecord.from_value({"shader_family": "Organic"})))
+
+
+class TestContractEmissionStrength(unittest.TestCase):
+    def test_emissive_colour_does_not_set_the_strength(self) -> None:
+        # Hill Horror helmet visor: Emissive is the colour (white), Glow the
+        # strength (0.01); taking the colour's mean lit the eyes up at 1.0.
+        visor = SubmaterialRecord.from_value(
+            {
+                "shader_family": "GlassPBR",
+                "authored_attributes": [
+                    {"name": "Emissive", "value": "1,1,1"},
+                    {"name": "Glow", "value": "0.0099999998"},
+                ],
+                "public_params": {"EmissiveOpacity": "1"},
+            }
+        )
+        self.assertAlmostEqual(_contract_emission_strength(visor), 0.01)
+
+    def test_emissive_colour_without_glow_does_not_emit(self) -> None:
+        glass = SubmaterialRecord.from_value(
+            {"shader_family": "GlassPBR", "authored_attributes": [{"name": "Emissive", "value": "1,1,1"}]}
+        )
+        self.assertEqual(_contract_emission_strength(glass), 0.0)
+
+    def test_emissive_texture_emits_without_glow(self) -> None:
+        glass = SubmaterialRecord.from_value({"shader_family": "GlassPBR"})
+        self.assertEqual(
+            _contract_emission_strength(glass, emissive_texture_path="Data/Textures/test_emissive.png"),
+            1.0,
+        )
+
+    def test_glow_is_scaled_by_emissive_opacity(self) -> None:
+        screen = SubmaterialRecord.from_value(
+            {
+                "shader_family": "GlassPBR",
+                "authored_attributes": [{"name": "Glow", "value": "0.5"}],
+                "public_params": {"EmissiveOpacity": "0.4"},
+            }
+        )
+        self.assertAlmostEqual(_contract_emission_strength(screen), 0.2)
 
 
 def _mesh_decal(string_gen_mask: str, **attributes: str) -> SubmaterialRecord:

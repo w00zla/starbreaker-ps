@@ -1223,6 +1223,7 @@ pub(crate) fn write_decomposed_export(
                 opts.lod_level,
                 opts.format,
                 existing_asset_paths,
+                input.root_materials.as_ref().and_then(|mtl| mtl.source_path.as_deref()),
             )
         })
         .transpose()?;
@@ -1427,6 +1428,7 @@ pub(crate) fn write_decomposed_export(
             opts.lod_level,
             opts.format,
             existing_asset_paths,
+            child.materials.as_ref().and_then(|mtl| mtl.source_path.as_deref()),
         )?;
         let material_sidecar = child_material_view.sidecar_materials.as_ref().map(|materials| {
             if opts.ui_only_files {
@@ -1824,6 +1826,9 @@ pub(crate) fn write_decomposed_export(
                             opts.lod_level,
                             opts.format,
                             existing_asset_paths,
+                            // Interiors keep geometry-named assets; their reuse
+                            // check above looks them up by that name.
+                            None,
                         )?
                     };
                     interior_asset_cache.insert(cache_key, (mesh_asset.clone(), material_sidecar.clone()));
@@ -2565,9 +2570,10 @@ fn write_mesh_asset(
     lod_level: u32,
     format: ExportFormat,
     existing_asset_paths: Option<&HashSet<String>>,
+    material_source: Option<&str>,
 ) -> Result<String, Error> {
     let requested_path =
-        mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format);
+        item_mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod_level, format, material_source);
     if existing_asset_paths
         .is_some_and(|paths| paths.contains(&requested_path.to_ascii_lowercase()))
     {
@@ -4031,6 +4037,38 @@ pub(crate) fn mesh_asset_relative_path(
         replace_extension(&normalize_source_path(p4k, geometry_path), extension)
     };
     insert_stem_suffix(&base, &format!("_LOD{lod}"))
+}
+
+/// The file-name suffix an item mesh asset needs for its material: the mesh
+/// `.blend` names its slots after the material file (`<mtl>_mtl_<name>_0<id>`),
+/// so two exports of one geometry with different materials (paint variants,
+/// the ores on one rock mesh) would overwrite each other in a shared `Data/`.
+/// `None` when the material is named like the geometry or unknown.
+fn material_mesh_suffix(geometry_path: &str, material_source: Option<&str>) -> Option<String> {
+    fn stem(path: &str) -> &str {
+        let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        file.split_once('.').map_or(file, |(stem, _)| stem)
+    }
+    let material_stem = stem(material_source?);
+    (!material_stem.is_empty() && !material_stem.eq_ignore_ascii_case(stem(geometry_path)))
+        .then(|| format!("_{material_stem}"))
+}
+
+/// [`mesh_asset_relative_path`] of a root or loadout child, with
+/// [`material_mesh_suffix`] for its material.
+pub(crate) fn item_mesh_asset_relative_path(
+    p4k: &MappedP4k,
+    geometry_path: &str,
+    fallback_name: &str,
+    lod: u32,
+    format: ExportFormat,
+    material_source: Option<&str>,
+) -> String {
+    let base = mesh_asset_relative_path(p4k, geometry_path, fallback_name, lod, format);
+    match material_mesh_suffix(geometry_path, material_source) {
+        Some(suffix) => insert_stem_suffix(&base, &suffix),
+        None => base,
+    }
 }
 
 fn material_sidecar_relative_path(
@@ -6405,6 +6443,25 @@ mod tests {
             f1.contains_key(&rel),
             "roughness PNG must be inserted on the prewarmed path"
         );
+    }
+
+    #[test]
+    fn material_mesh_suffix_names_a_material_other_than_the_geometry() {
+        // The ores share ui_ore_raw_1_a with a material each; the mesh .blend
+        // carries that material's slot names, so each needs its own file.
+        assert_eq!(
+            material_mesh_suffix(
+                "Objects/UI/Crafting/icons/ui_ore_raw_1_a.cgf",
+                Some("Data/Objects/UI/Crafting/icons/ui_ore_hephaestanite_1_a.mtl"),
+            ),
+            Some("_ui_ore_hephaestanite_1_a".to_string())
+        );
+        assert_eq!(
+            material_mesh_suffix("Objects/Ships/hull.cga", Some("Data/Objects/Ships/HULL.mtl")),
+            None,
+            "a material named like its geometry keeps the plain name"
+        );
+        assert_eq!(material_mesh_suffix("Objects/Ships/hull.cga", None), None);
     }
 
     #[test]

@@ -20,7 +20,7 @@ fn bundled_extension(format: starbreaker_3d::ExportFormat) -> &'static str {
     }
 }
 
-fn export_entity_name(name: &str) -> String {
+pub(crate) fn export_entity_name(name: &str) -> String {
     let trimmed = name.trim_matches('"');
     trimmed
         .rsplit('.')
@@ -58,7 +58,7 @@ pub(crate) fn sanitize_export_name(name: &str) -> String {
 /// The decomposed exporter names the folder `<name>_LOD<n>_TEX<n>` and, when a
 /// package subdir is configured, nests it under that object-type folder. Both
 /// halves have to match or the CLI cleans and verifies the wrong directory.
-fn decomposed_package_rel_path(export_name: &str, opts: &starbreaker_3d::ExportOptions) -> PathBuf {
+pub(crate) fn decomposed_package_rel_path(export_name: &str, opts: &starbreaker_3d::ExportOptions) -> PathBuf {
     let package_name = format!("{export_name}_LOD{}_TEX{}", opts.lod_level, opts.texture_mip);
     match opts.decomposed_package_subdir.as_deref() {
         Some(subdir) => Path::new(subdir).join(package_name),
@@ -417,7 +417,7 @@ fn interior_asset_lookup_key(cgf_path: &str, material_path: Option<&str>) -> Str
     )
 }
 
-fn read_reusable_decomposed_asset(
+pub(crate) fn read_reusable_decomposed_asset(
     output_root: &Path,
     reusable_asset_paths: &HashSet<String>,
     relative_path: &str,
@@ -466,6 +466,20 @@ pub enum EntityCommand {
         /// Decomposed export root directory
         output: PathBuf,
     },
+    /// Export many entities as decomposed packages with one P4k/DataCore load.
+    /// Prints one JSON line per job (ok, package, worn, seconds, error)
+    ExportBatch {
+        /// JSON job list: [{"name": "<exact class name>", "output": "<root>", "worn": bool}]
+        jobs: PathBuf,
+        /// Path to Data.p4k
+        #[arg(long, env = "SC_DATA_P4K")]
+        p4k: Option<PathBuf>,
+        /// Leave out files an icon render never reads (animation clips, diagnostics)
+        #[arg(long)]
+        icon_files: bool,
+        #[command(flatten)]
+        opts: ExportOpts,
+    },
 }
 
 impl EntityCommand {
@@ -490,6 +504,9 @@ impl EntityCommand {
             } => export(name, output, p4k, dump_hierarchy, opts),
             Self::Loadout { name, p4k } => loadout(name, p4k),
             Self::Validate { output } => validate(output),
+            Self::ExportBatch { jobs, p4k, icon_files, opts } => {
+                crate::entity_batch::export_batch(jobs, p4k, icon_files, opts)
+            }
         }
     }
 }

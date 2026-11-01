@@ -55,7 +55,7 @@ def _load_utils() -> tuple[types.ModuleType, types.ModuleType]:
     importer_pkg.__path__ = [str(ADDON_ROOT / "runtime" / "importer")]
     sys.modules["sb_lights_test_runtime.importer"] = importer_pkg
 
-    utils_src = (ADDON_ROOT / "runtime" / "importer" / "utils.py").read_text()
+    utils_src = (ADDON_ROOT / "runtime" / "importer" / "utils.py").read_text(encoding="utf-8")
     # Rewrite relative imports to absolute paths under our shim package root.
     utils_src = utils_src.replace("from ...", "from sb_lights_test_addon.")
     utils_src = utils_src.replace("from ..constants import", "from sb_lights_test_runtime.constants import")

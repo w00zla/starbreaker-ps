@@ -324,6 +324,39 @@ def _emissive_opacity_factor(submaterial: SubmaterialRecord) -> float:
         return 1.0
 
 
+def _organic_base_tint(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
+    """Colour of an ``Organic`` material (minerals such as Hadanite).
+
+    Its diffuse is grey; the colour is the first layer's ``TintColor`` (the
+    crystal, the second layer is grey sand), which the principled build would
+    otherwise drop.
+    """
+    if submaterial.shader_family != "Organic" or not submaterial.layer_manifest:
+        return None
+    return submaterial.layer_manifest[0].tint_color
+
+
+def _contract_emission_strength(
+    submaterial: SubmaterialRecord,
+    *,
+    emissive_texture_path: str | None = None,
+) -> float:
+    """Emission strength of a contract-group material without its own emission input.
+
+    ``Emissive`` is the emission colour, ``Glow`` its strength: the Hill Horror
+    helmet visor authors ``Emissive="1,1,1"`` with ``Glow="0.01"`` and shows dark
+    eyes in game. An emissive texture without a Glow emits at full strength.
+    """
+    glow_value = _float_authored_attribute(submaterial, "Glow")
+    if glow_value > 0.0:
+        strength = glow_value
+    elif emissive_texture_path:
+        strength = 1.0
+    else:
+        return 0.0
+    return strength * _emissive_opacity_factor(submaterial)
+
+
 def _mesh_decal_authored_emission_strength(
     submaterial: SubmaterialRecord,
     *,

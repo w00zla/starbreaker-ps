@@ -1948,11 +1948,34 @@ def _material_refresh_prompt_timer(token: int | None = None) -> float | None:
     return None
 
 
+def _refresh_loaded_packages_in_background() -> None:
+    """Load-post refresh for `blender -b` (scripted renders and exports).
+
+    No event loop runs the timer and nobody sees a partial build, so every
+    package root is rebuilt in full, as the Refresh Materials operator does.
+    """
+    if not _should_auto_refresh_unloaded_materials_on_load(_get_prefs()):
+        return
+    for obj in list(bpy.data.objects):
+        if not bool(obj.get(PROP_PACKAGE_ROOT)):
+            continue
+        palette_id = obj.get(PROP_PALETTE_ID, "")
+        refresh_materials_for_package_root(
+            bpy.context,
+            obj,
+            palette_id if isinstance(palette_id, str) and palette_id else None,
+        )
+
+
 @persistent
 def _starbreaker_load_post(_dummy: object) -> None:
     global _AUTO_MATERIAL_REFRESH_TOKEN
     _AUTO_MATERIAL_REFRESH_TOKEN += 1
     token = _AUTO_MATERIAL_REFRESH_TOKEN
+    if bpy.app.background:
+        # `blender -b` runs no event loop, so a timer never fires: refresh now.
+        _refresh_loaded_packages_in_background()
+        return
     bpy.app.timers.register(
         lambda: _material_refresh_prompt_timer(token),
         first_interval=0.05,

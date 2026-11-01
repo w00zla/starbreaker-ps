@@ -11,6 +11,7 @@
 
 use starbreaker_datacore::error::QueryError;
 use starbreaker_datacore::database::Database;
+use starbreaker_datacore::material_variants::{item_tags, published_tags, record_material_path};
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
 
@@ -109,9 +110,15 @@ fn export_entity_payload_cached(
             record_name: record_name(),
         })?;
 
-    let material_path = db
+    let geometry_material = db
         .query_single::<String>(&mtl_compiled, record)?
         .unwrap_or_default();
+    // Paint editions (backpacks, weapons) name their material only in the
+    // record's Material node, its variants keyed by the item's tags and the
+    // worn model's gender tag.
+    let mut material_context = published_tags(&item_tags(db, record));
+    material_context.extend(opts.worn_subgeometry_tag.iter().cloned());
+    let material_path = record_material_path(db, record, &geometry_material, &material_context);
     let worn = opts
         .worn_subgeometry_tag
         .as_deref()

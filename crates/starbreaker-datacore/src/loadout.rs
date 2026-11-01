@@ -136,6 +136,16 @@ impl<'a> EntityIndex<'a> {
             ),
             None => (None, None),
         };
+        // A child's Material node wins over its geometry material, as for the
+        // root (attached paint editions name theirs only there).
+        let tags = crate::material_variants::published_tags(&crate::material_variants::item_tags(self.db, record));
+        let mtl = Some(crate::material_variants::record_material_path(
+            self.db,
+            record,
+            mtl.as_deref().unwrap_or(""),
+            &tags,
+        ))
+        .filter(|p| !p.is_empty());
         (geom, mtl)
     }
 

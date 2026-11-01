@@ -25,6 +25,7 @@ def _load_ui_function(name: str):
         "PROP_PALETTE_ID": "starbreaker_palette_id",
         "SCENE_ENGINE_GLOW_PROP": "starbreaker_engine_glow_strength",
         "SCENE_SHARED_GLOW_PROP": "starbreaker_shared_glow_strength",
+        "persistent": lambda func: func,
         "bpy": types.SimpleNamespace(
             context=object(),
             data=types.SimpleNamespace(objects=[]),
@@ -135,6 +136,45 @@ class TestAutoRefreshPromptTimer(unittest.TestCase):
         self.assertEqual(end_calls, ["Refreshed 7 material slots for Test Package"])
         self.assertEqual(session_created, [])
         self.assertIsNone(namespace["_AUTO_MATERIAL_REFRESH_SESSION"])
+
+    def _load_post_with_recorders(self, *, background: bool):
+        load_post, namespace = _load_ui_function("_starbreaker_load_post")
+        background_calls: list[bool] = []
+        timer_calls: list[object] = []
+        namespace["bpy"].app.background = background
+        namespace["bpy"].app.timers.register = lambda callback, **_kwargs: timer_calls.append(callback)
+        namespace["_refresh_loaded_packages_in_background"] = lambda: background_calls.append(True)
+        load_post(None)
+        return background_calls, timer_calls
+
+    def test_load_post_refreshes_at_once_in_background_mode(self) -> None:
+        # `blender -b` has no event loop: a timer would never fire and the
+        # package would render with its placeholder materials.
+        background_calls, timer_calls = self._load_post_with_recorders(background=True)
+        self.assertEqual(background_calls, [True])
+        self.assertEqual(timer_calls, [])
+
+    def test_load_post_defers_refresh_to_a_timer_with_ui(self) -> None:
+        background_calls, timer_calls = self._load_post_with_recorders(background=False)
+        self.assertEqual(background_calls, [])
+        self.assertEqual(len(timer_calls), 1)
+
+    def test_background_refresh_rebuilds_every_package_root_in_full(self) -> None:
+        # Not only the slots the UI path counts as unloaded: a template
+        # placeholder (Reclaimer shield generator) kept its unbuilt slots.
+        refresh, namespace = _load_ui_function("_refresh_loaded_packages_in_background")
+        first = _MockObject("A", starbreaker_package_root=True, starbreaker_palette_id="palette/a")
+        second = _MockObject("B", starbreaker_package_root=True)
+        other = _MockObject("C")
+        calls: list[tuple] = []
+        namespace["bpy"].data.objects = [first, other, second]
+        namespace["_get_prefs"] = lambda: object()
+        namespace["_should_auto_refresh_unloaded_materials_on_load"] = lambda _prefs: True
+        namespace["refresh_materials_for_package_root"] = (
+            lambda context, package_root, palette_id, **kwargs: calls.append((package_root.name, palette_id, kwargs)) or 1
+        )
+        refresh()
+        self.assertEqual(calls, [("A", "palette/a", {}), ("B", None, {})])
 
     def test_skips_refresh_when_pref_disabled(self) -> None:
         prompt_timer, namespace = _load_material_refresh_prompt_timer()

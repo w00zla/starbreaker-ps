@@ -259,7 +259,7 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
     importer_stub.PackageImporter = PackageImporter
     sys.modules["sb_pkg_test_runtime.importer"] = importer_stub
 
-    source = (ADDON_ROOT / "runtime" / "package_ops.py").read_text()
+    source = (ADDON_ROOT / "runtime" / "package_ops.py").read_text(encoding="utf-8")
     source = source.replace("from ..manifest import", "from sb_pkg_test_addon.manifest import")
     source = source.replace("from ..palette import", "from sb_pkg_test_addon.palette import")
     source = source.replace("from .constants import", "from sb_pkg_test_runtime.constants import")
@@ -1362,6 +1362,13 @@ class PackageOpsTests(unittest.TestCase):
         self.assertEqual(child.get("starbreaker_material_sidecar"), "base.materials.json")
         self.assertNotIn("starbreaker_paint_variant_sidecar", package_root)
         self.assertEqual(rebuild_calls, [("livery_decal_body", "base.materials.json", "palette/rsi_scorpius")])
+
+    def test_canonical_source_name_drops_authored_trailing_space(self) -> None:
+        # Sidecar lookups key on stripped submaterial names ("ore_hephaestanite ").
+        self.assertEqual(
+            self.package_ops._canonical_source_name("ui_ore_hephaestanite_1_a_mtl_ore_hephaestanite _00"),
+            "ore_hephaestanite",
+        )
 
 
 class AnimationDisplayNameTests(unittest.TestCase):

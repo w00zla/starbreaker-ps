@@ -111,9 +111,15 @@ pub fn resolve_loadout_meshes(
         record.struct_id(),
         "Components[SGeometryResourceParams].Geometry.Geometry.Material.path",
     ).ok();
-    let material_path = mtl_compiled
+    let geometry_material = mtl_compiled
         .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
         .unwrap_or_default();
+    let material_context = starbreaker_datacore::material_variants::published_tags(
+        &starbreaker_datacore::material_variants::item_tags(db, record),
+    );
+    let material_path = starbreaker_datacore::material_variants::record_material_path(
+        db, record, &geometry_material, &material_context,
+    );
 
     let (geometry_path, material_path) = super::geometry_variant::resolve(
         db, record, opts.geometry_tag.as_deref(), geometry_path, material_path,
