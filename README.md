@@ -1,3 +1,25 @@
+# StarBreaker (starbreaker-qm)
+
+> **This is a fork.** starbreaker-qm merges [fleetyards/StarBreaker](https://github.com/fleetyards/StarBreaker), itself a fork of
+> [diogotr7/StarBreaker](https://github.com/diogotr7/StarBreaker), with the current upstream. It exists to render inventory-style
+> item icons (FPS weapons, armour, ship components, ores) for a Star Citizen org tool, so its focus is decomposed item exports and
+> how their materials come out in Blender.
+>
+> - **Base: the fleetyards fork** and its item and material work: CDF weapon parts placed correctly (magazines included),
+>   `--worn` for armour (the worn model with its material and tint palette instead of the loot crate), `--variant-tags` for paint
+>   variants, and the Blender add-on's LayerBlend, Illum, palette and decal handling.
+> - **Upstream merged in on top:** skinning (`mesh_rig::Skin`, the only skin representation here), character and armour-set
+>   export, `--geometry-tag`, audio, UI, the MCP server and upstream's fixes. Where both sides solved the same problem, the item
+>   path keeps the fleetyards behaviour.
+> - **Blender add-on:** the fleetyards one, unchanged. Both sides rebuilt the decal system across several modules and a mix did
+>   not run, so upstream's add-on additions (skin, hair, screens, control-only POM decals) are not in this fork.
+> - **Version** `0.3.2-qm.n`, no releases: build with `cargo build --release -p starbreaker`.
+>
+> Not affiliated with either project; problems with this fork belong here, not upstream. Everything below is the original
+> upstream README.
+
+---
+
 # StarBreaker
 
 [Download latest release](https://github.com/diogotr7/StarBreaker/releases/latest)
