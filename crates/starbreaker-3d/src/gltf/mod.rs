@@ -1,14 +1,15 @@
+mod animation;
 mod glb_builder;
 
 use gltf_json as json;
 use json::validation::Checked;
-use starbreaker_common::progress::{report as report_progress, Progress};
+use starbreaker_common::progress::{Progress, report as report_progress};
 
 use crate::error::Error;
 use crate::nmc::NodeMeshCombo;
 use crate::types::{MaterialTextures, Mesh};
 
-pub(crate) use glb_builder::{offset_to_gltf_matrix, GlbBuilder, PackedMeshInfo};
+pub(crate) use glb_builder::{GlbBuilder, PackedMeshInfo, VertexAccessors, offset_to_gltf_matrix};
 
 fn hierarchy_covers_bones(nmc: Option<&NodeMeshCombo>, bones: &[crate::skeleton::Bone]) -> bool {
     let Some(nmc) = nmc.filter(|nmc| !nmc.nodes.is_empty()) else {
@@ -41,6 +42,8 @@ pub struct GlbInput {
     pub skeleton_bones: Vec<crate::skeleton::Bone>,
     pub children: Vec<crate::types::EntityPayload>,
     pub interiors: crate::pipeline::LoadedInteriors,
+    /// Animation clips (bones by name, morph targets by name).
+    pub animations: Vec<crate::clip::Clip>,
 }
 
 pub struct GlbLoaders<'a> {
@@ -48,9 +51,11 @@ pub struct GlbLoaders<'a> {
         Option<&crate::mtl::MtlFile>,
         Option<&crate::mtl::TintPalette>,
     ) -> Option<MaterialTextures>,
-    pub load_interior_mesh: &'a mut dyn FnMut(
-        &crate::pipeline::InteriorCgfEntry,
-    ) -> Option<(Mesh, Option<crate::mtl::MtlFile>, Option<NodeMeshCombo>)>,
+    pub load_interior_mesh:
+        &'a mut dyn FnMut(
+            &crate::pipeline::InteriorCgfEntry,
+        )
+            -> Option<(Mesh, Option<crate::mtl::MtlFile>, Option<NodeMeshCombo>)>,
 }
 
 pub struct GlbOptions {
@@ -80,7 +85,6 @@ pub struct ExportOptionsMetadata {
     pub include_attachments: bool,
     pub include_interior: bool,
 }
-
 
 pub(crate) fn mat3x4_to_gltf(m: &[[f32; 4]; 3]) -> [f32; 16] {
     [
@@ -125,8 +129,12 @@ pub(crate) fn add_vertex_accessor(
             json::accessor::ComponentType::F32,
         )),
         type_: Checked::Valid(accessor_type),
-        min: min_max.map(|(min, _)| serde_json::Value::Array(min.iter().map(|&v| serde_json::Value::from(v)).collect())),
-        max: min_max.map(|(_, max)| serde_json::Value::Array(max.iter().map(|&v| serde_json::Value::from(v)).collect())),
+        min: min_max.map(|(min, _)| {
+            serde_json::Value::Array(min.iter().map(|&v| serde_json::Value::from(v)).collect())
+        }),
+        max: min_max.map(|(_, max)| {
+            serde_json::Value::Array(max.iter().map(|&v| serde_json::Value::from(v)).collect())
+        }),
         name: None,
         normalized: false,
         sparse: None,
@@ -135,7 +143,6 @@ pub(crate) fn add_vertex_accessor(
     });
     Some(acc_idx)
 }
-
 
 pub(crate) fn is_identity_or_zero(m: &[[f32; 4]; 3]) -> bool {
     let all_zero = m.iter().all(|row| row.iter().all(|&v| v == 0.0));
@@ -174,11 +181,20 @@ pub fn write_glb_with_progress(
     let mut builder = GlbBuilder::new();
     builder.include_vertex_colors = opts.include_vertex_colors;
     builder.include_damage = opts.include_damage;
+    // The root's instance name; decomposed GLBs are shared assets and carry
+    // no instance metadata.
+    let root_name = opts.metadata.entity_name.clone().filter(|_| opts.metadata.export_options.kind != "Decomposed");
 
     log::info!("[mem-phase] start write_glb");
     report_progress(progress, 0.05, "Packing root mesh");
     // ---- Pack root entity (drop textures after packing) ----
-    let mut scene_nodes = if let Some(root_mesh) = input.root_mesh {
+    let root_without_geometry = input.root_mesh.as_ref().is_some_and(|m| m.positions.is_empty())
+        && input.root_nmc.as_ref().is_none_or(|n| n.nodes.is_empty());
+    let mut scene_nodes = if root_without_geometry {
+        // No geometry (as for a child): a node without a mesh.
+        builder.nodes_json.push(json::Node { name: root_name.clone(), ..Default::default() });
+        vec![json::Index::new(0)]
+    } else if let Some(root_mesh) = input.root_mesh {
         // See `build_nmc_hierarchy`: only a freshly appended flat mesh may be popped.
         let meshes_before_pack = builder.meshes_json.len();
         let root_packed = builder.pack_mesh(
@@ -186,7 +202,7 @@ pub fn write_glb_with_progress(
             input.root_materials.as_ref(),
             input.root_textures.as_ref(),
             input.root_palette.as_ref(),
-            None,
+            root_name.as_deref(),
             opts.material_mode,
             opts.preserve_textureless_decal_primitives,
         );
@@ -206,8 +222,9 @@ pub fn write_glb_with_progress(
                 .map(|&i| json::Index::new(i))
                 .collect::<Vec<_>>()
         } else {
-            // Flat path — single node with root mesh
+            // Flat path — single node with root mesh, named after the entity
             builder.nodes_json.push(json::Node {
+                name: root_name.clone(),
                 mesh: Some(json::Index::new(root_packed.mesh_idx)),
                 ..Default::default()
             });
@@ -217,11 +234,19 @@ pub fn write_glb_with_progress(
         Vec::new()
     };
 
-    log::info!("[mem-phase] root packed, bin={}MB", builder.bin.len() / 1_048_576);
+    log::info!(
+        "[mem-phase] root packed, bin={}MB",
+        builder.bin.len() / 1_048_576
+    );
     report_progress(progress, 0.20, "Packing child meshes");
     // ---- Skeleton bone nodes ----
     if !hierarchy_covers_bones(input.root_nmc.as_ref(), &input.skeleton_bones) {
         builder.attach_skeleton_bones(&input.skeleton_bones, &scene_nodes);
+    }
+    // Children name the root by its entity (`parent_entity_name`). After the
+    // skeleton, so a bone of the same name keeps its node.
+    if let (Some(name), Some(root)) = (root_name.as_ref(), scene_nodes.first()) {
+        builder.node_name_to_idx.entry(name.to_lowercase()).or_insert(root.value() as u32);
     }
 
     // ---- Attach child entities ----
@@ -240,20 +265,36 @@ pub fn write_glb_with_progress(
             report_progress(progress, 0.20 + 0.40 * fraction, "Packing child meshes");
         }
         if (i + 1) % 20 == 0 || i + 1 == num_children {
-            log::info!("[mem-phase] children {}/{}, bin={}MB", i + 1, num_children, builder.bin.len() / 1_048_576);
+            log::info!(
+                "[mem-phase] children {}/{}, bin={}MB",
+                i + 1,
+                num_children,
+                builder.bin.len() / 1_048_576
+            );
         }
     }
 
-    log::info!("[mem-phase] children done, bin={}MB", builder.bin.len() / 1_048_576);
+    log::info!(
+        "[mem-phase] children done, bin={}MB",
+        builder.bin.len() / 1_048_576
+    );
+    builder.add_animations(&input.animations)?;
     if num_children == 0 {
         report_progress(progress, 0.60, "Packing interiors");
     }
     // ---- Interior mesh instancing ----
     let (interior_scene_nodes, all_lights) = builder.attach_interiors(
-        &input.interiors, opts.material_mode, opts.fallback_palette.as_ref(), loaders.load_textures, loaders.load_interior_mesh,
+        &input.interiors,
+        opts.material_mode,
+        opts.fallback_palette.as_ref(),
+        loaders.load_textures,
+        loaders.load_interior_mesh,
     );
     scene_nodes.extend(interior_scene_nodes);
-    log::info!("[mem-phase] interiors done, bin={}MB", builder.bin.len() / 1_048_576);
+    log::info!(
+        "[mem-phase] interiors done, bin={}MB",
+        builder.bin.len() / 1_048_576
+    );
     report_progress(progress, 0.80, "Finalizing GLB");
 
     // ---- Entity + palette extras on root node ----
@@ -272,21 +313,25 @@ pub fn write_glb_with_progress(
             }
         }
         if let Some(ref pal) = input.root_palette {
-            map.insert("tint_palette".into(), serde_json::json!({
-                "primary": pal.primary,
-                "secondary": pal.secondary,
-                "tertiary": pal.tertiary,
-                "glass": pal.glass
-            }));
+            map.insert(
+                "tint_palette".into(),
+                serde_json::json!({
+                    "primary": pal.primary,
+                    "secondary": pal.secondary,
+                    "tertiary": pal.tertiary,
+                    "glass": pal.glass
+                }),
+            );
         }
         if !map.is_empty() {
             if let Some(first) = scene_nodes.first() {
                 let idx = first.value() as usize;
                 if idx < builder.nodes_json.len() {
                     builder.nodes_json[idx].extras = Some(
-                        serde_json::value::RawValue::from_string(
-                            serde_json::to_string(&serde_json::Value::Object(map))?
-                        )?.into()
+                        serde_json::value::RawValue::from_string(serde_json::to_string(
+                            &serde_json::Value::Object(map),
+                        )?)?
+                        .into(),
                     );
                 }
             }
@@ -296,6 +341,11 @@ pub fn write_glb_with_progress(
     report_progress(progress, 0.95, "Finalizing GLB");
     builder.finalize(scene_nodes, all_lights, &opts.metadata)
 }
+
+#[cfg(test)]
+mod tests_anim;
+#[cfg(test)]
+mod tests_rig;
 
 #[cfg(test)]
 mod tests {
@@ -339,7 +389,8 @@ mod tests {
             model_max: [1.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [1.0; 3],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 
@@ -388,10 +439,10 @@ mod tests {
 
     fn shared_png() -> Vec<u8> {
         vec![
-            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0,
-            0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156,
-            99, 248, 255, 255, 63, 0, 5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69,
-            78, 68, 174, 66, 96, 130,
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 255,
+            255, 63, 0, 5, 254, 2, 254, 167, 53, 129, 132, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96,
+            130,
         ]
     }
 
@@ -561,6 +612,7 @@ mod tests {
                 material_path: Some("Data/Objects/layered_variant.mtl".into()),
             }),
             material_set: crate::mtl::MaterialSetAuthoredData {
+                sub_materials: true,
                 attributes: vec![crate::mtl::AuthoredAttribute {
                     name: "DefaultPalette".into(),
                     value: "vehicle.palette.rsi_zeus_cl".into(),
@@ -939,7 +991,10 @@ mod tests {
         }
     }
 
-    fn child_entity(entity_name: &str, materials: crate::mtl::MtlFile) -> crate::types::EntityPayload {
+    fn child_entity(
+        entity_name: &str,
+        materials: crate::mtl::MtlFile,
+    ) -> crate::types::EntityPayload {
         crate::types::EntityPayload {
             mesh: triangle_mesh(),
             materials: Some(materials),
@@ -961,6 +1016,7 @@ mod tests {
             detach_direction: [0.0; 3],
             port_flags: String::new(),
             docking_collar_port: None,
+            ui_bindings: Vec::new(),
         }
     }
 
@@ -1007,6 +1063,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1016,7 +1073,10 @@ mod tests {
         )
     }
 
-    fn write_glb_simple(mesh: &Mesh, nmc: Option<&NodeMeshCombo>) -> Result<Vec<u8>, crate::error::Error> {
+    fn write_glb_simple(
+        mesh: &Mesh,
+        nmc: Option<&NodeMeshCombo>,
+    ) -> Result<Vec<u8>, crate::error::Error> {
         write_glb(
             GlbInput {
                 root_mesh: Some(mesh.clone()),
@@ -1027,6 +1087,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1064,7 +1125,8 @@ mod tests {
 
         let bin_offset = 20 + json_len;
         if glb.len() > bin_offset + 8 {
-            let bin_type = u32::from_le_bytes(glb[bin_offset + 4..bin_offset + 8].try_into().unwrap());
+            let bin_type =
+                u32::from_le_bytes(glb[bin_offset + 4..bin_offset + 8].try_into().unwrap());
             assert_eq!(bin_type, 0x004E4942, "second chunk should be BIN");
         }
     }
@@ -1074,7 +1136,31 @@ mod tests {
         let glb = call_write_glb(colored_triangle_mesh()).expect("write_glb failed");
         let root = glb_json(&glb);
         let attributes = &root["meshes"][0]["primitives"][0]["attributes"];
-        assert!(attributes.get("COLOR_0").is_some(), "vertex colors should export as COLOR_0");
+        assert!(
+            attributes.get("COLOR_0").is_some(),
+            "vertex colors should export as COLOR_0"
+        );
+    }
+
+    /// Without a `.mtl`, each material id keeps its own (default) glTF
+    /// material, as the `.blend` writer keeps one slot per material id: the
+    /// submeshes stay distinguishable instead of collapsing into one.
+    #[test]
+    fn write_glb_keeps_one_default_material_per_material_id() {
+        let mut mesh = triangle_mesh();
+        let first = mesh.submeshes[0].clone();
+        mesh.submeshes = (0..3)
+            .map(|id| SubMesh { material_name: None, material_id: id, ..first.clone() })
+            .chain(std::iter::once(SubMesh { material_name: None, material_id: 1, ..first.clone() }))
+            .collect();
+        let root = glb_json(&call_write_glb(mesh).expect("write_glb failed"));
+        let materials: std::collections::BTreeSet<u64> = root["meshes"][0]["primitives"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["material"].as_u64().expect("material index"))
+            .collect();
+        assert_eq!(materials.len(), 3, "one material per id: {root:#}");
     }
 
     #[test]
@@ -1082,7 +1168,39 @@ mod tests {
         let glb = call_write_glb(multi_uv_triangle_mesh()).expect("write_glb failed");
         let root = glb_json(&glb);
         let attributes = &root["meshes"][0]["primitives"][0]["attributes"];
-        assert!(attributes.get("TEXCOORD_1").is_some(), "second UVs should export as TEXCOORD_1");
+        assert!(
+            attributes.get("TEXCOORD_1").is_some(),
+            "second UVs should export as TEXCOORD_1"
+        );
+    }
+
+    /// A root without geometry (a character whose head a helmet hides) is
+    /// a node without a mesh, as a child without geometry is; its children
+    /// still hang under it.
+    #[test]
+    fn write_glb_root_without_geometry_has_no_mesh() {
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(Mesh::empty()),
+                root_materials: None,
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: vec![child_entity("child_a", shared_material_file())],
+                interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
+            },
+            &mut GlbLoaders { load_textures: &mut |_, _| None, load_interior_mesh: &mut |_| None },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let root = &json["nodes"][json["scenes"][0]["nodes"][0].as_u64().unwrap() as usize];
+        assert!(root.get("mesh").is_none(), "{root}");
+        assert_eq!(json["meshes"].as_array().map_or(0, |a| a.len()), 1, "only the child's mesh");
+        assert!(root["children"].as_array().is_some_and(|c| !c.is_empty()), "the child hangs under the root");
     }
 
     #[test]
@@ -1103,6 +1221,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children,
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| Some(shared_textures()),
@@ -1139,6 +1258,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1156,14 +1276,32 @@ mod tests {
 
         assert_eq!(layers.len(), 2);
         assert_eq!(layers[0]["index"], serde_json::json!(0));
-        assert_eq!(layers[0]["path"], serde_json::json!("libs/materials/base_steel.mtl"));
-        assert_eq!(layers[0]["resolved_material"]["shader_family"], serde_json::json!("Layer"));
-        assert_eq!(layers[0]["resolved_material"]["authored_attributes"][0]["name"], serde_json::json!("MatTemplate"));
-        assert_eq!(layers[0]["authored_attributes"][0]["name"], serde_json::json!("CustomBlendMode"));
-        assert_eq!(layers[0]["authored_child_blocks"][0]["tag"], serde_json::json!("CustomAnimation"));
+        assert_eq!(
+            layers[0]["path"],
+            serde_json::json!("libs/materials/base_steel.mtl")
+        );
+        assert_eq!(
+            layers[0]["resolved_material"]["shader_family"],
+            serde_json::json!("Layer")
+        );
+        assert_eq!(
+            layers[0]["resolved_material"]["authored_attributes"][0]["name"],
+            serde_json::json!("MatTemplate")
+        );
+        assert_eq!(
+            layers[0]["authored_attributes"][0]["name"],
+            serde_json::json!("CustomBlendMode")
+        );
+        assert_eq!(
+            layers[0]["authored_child_blocks"][0]["tag"],
+            serde_json::json!("CustomAnimation")
+        );
         assert_eq!(layers[0]["palette_tint"], serde_json::json!(1));
         assert_eq!(layers[1]["index"], serde_json::json!(1));
-        assert_eq!(layers[1]["path"], serde_json::json!("libs/materials/wear_scratches.mtl"));
+        assert_eq!(
+            layers[1]["path"],
+            serde_json::json!("libs/materials/wear_scratches.mtl")
+        );
         let tint = layers[1]["tint_color"]
             .as_array()
             .expect("layer tint_color should be an array");
@@ -1173,6 +1311,52 @@ mod tests {
         assert!((tint[2].as_f64().unwrap() - 0.6).abs() < 1e-5);
         assert_eq!(layers[1]["palette_tint"], serde_json::json!(2));
         assert_eq!(layers[1]["uv_tiling"], serde_json::json!(2.5));
+    }
+
+    #[test]
+    fn write_glb_uses_layer_snapshot_metallic_for_layered_materials() {
+        let mut materials = layered_material_file();
+        materials.materials[0].layers[0].snapshot = Some(crate::mtl::MatLayerSnapshot {
+            shader: "Layer".into(),
+            diffuse: [1.0, 1.0, 1.0],
+            specular: [0.8, 0.72, 0.6],
+            shininess: 220.0,
+            wear_specular_color: None,
+            wear_glossiness: Some(0.75),
+            surface_type: Some("metal_dense".into()),
+            metallic: 1.0,
+        });
+
+        let glb = write_glb(
+            GlbInput {
+                root_mesh: Some(triangle_mesh()),
+                root_materials: Some(materials),
+                root_textures: None,
+                root_nmc: None,
+                root_palette: None,
+                skeleton_bones: Vec::new(),
+                children: Vec::new(),
+                interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
+            },
+            &mut GlbLoaders {
+                load_textures: &mut |_, _| None,
+                load_interior_mesh: &mut |_| None,
+            },
+            &default_opts(),
+        )
+        .expect("write_glb failed");
+
+        let json = glb_json(&glb);
+        let material = &json["materials"][0];
+        assert_eq!(
+            material["pbrMetallicRoughness"]["metallicFactor"],
+            serde_json::json!(1.0)
+        );
+        assert_eq!(
+            material["extras"]["semantic"]["layer_manifest"][0]["layer_snapshot"]["metallic"],
+            serde_json::json!(1.0)
+        );
     }
 
     #[test]
@@ -1187,6 +1371,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1211,9 +1396,15 @@ mod tests {
         let material_set_identity = &semantic["material_set_identity"];
         let paint_override = &semantic["paint_override"];
 
-        assert_eq!(palette["source_name"], serde_json::json!("vehicle.palette.rsi_zeus_cl"));
+        assert_eq!(
+            palette["source_name"],
+            serde_json::json!("vehicle.palette.rsi_zeus_cl")
+        );
         assert_eq!(palette["material_channel"]["index"], serde_json::json!(1));
-        assert_eq!(palette["material_channel"]["name"], serde_json::json!("primary"));
+        assert_eq!(
+            palette["material_channel"]["name"],
+            serde_json::json!("primary")
+        );
         assert_eq!(resolved_color.len(), 3);
         assert!((resolved_color[0].as_f64().unwrap() - 0.1).abs() < 1e-5);
         assert!((resolved_color[1].as_f64().unwrap() - 0.2).abs() < 1e-5);
@@ -1228,7 +1419,10 @@ mod tests {
         assert!((resolved_finish["glossiness"].as_f64().unwrap() - 0.8).abs() < 1e-5);
         assert_eq!(palette_layers.len(), 2);
         assert_eq!(palette_layers[0]["index"], serde_json::json!(0));
-        assert_eq!(palette_layers[0]["channel"]["name"], serde_json::json!("primary"));
+        assert_eq!(
+            palette_layers[0]["channel"]["name"],
+            serde_json::json!("primary")
+        );
         let layer_finish_specular = palette_layers[0]["resolved_finish"]["specular"]
             .as_array()
             .expect("layer finish specular should be present");
@@ -1236,27 +1430,85 @@ mod tests {
         assert!((layer_finish_specular[0].as_f64().unwrap() - 0.6).abs() < 1e-5);
         assert!((layer_finish_specular[1].as_f64().unwrap() - 0.5).abs() < 1e-5);
         assert!((layer_finish_specular[2].as_f64().unwrap() - 0.4).abs() < 1e-5);
-        assert!((palette_layers[0]["resolved_finish"]["glossiness"].as_f64().unwrap() - 0.8).abs() < 1e-5);
+        assert!(
+            (palette_layers[0]["resolved_finish"]["glossiness"]
+                .as_f64()
+                .unwrap()
+                - 0.8)
+                .abs()
+                < 1e-5
+        );
         assert_eq!(palette_layers[1]["index"], serde_json::json!(1));
-        assert_eq!(palette_layers[1]["channel"]["name"], serde_json::json!("secondary"));
+        assert_eq!(
+            palette_layers[1]["channel"]["name"],
+            serde_json::json!("secondary")
+        );
         assert!(palette_layers[1]["resolved_finish"].is_null());
 
-        assert_eq!(material_set_identity["source_path"], serde_json::json!("Data/Objects/layered.mtl"));
-        assert_eq!(material_set_identity["source_stem"], serde_json::json!("layered"));
-        assert_eq!(material_set_identity["submaterial_index"], serde_json::json!(0));
-        assert_eq!(material_set_identity["submaterial_name"], serde_json::json!("layered"));
-        assert_eq!(material_set_identity["slot_name"], serde_json::json!("test"));
-        assert_eq!(paint_override["subgeometry_tag"], serde_json::json!("VariantGold"));
-        assert_eq!(paint_override["paint_item_name"], serde_json::json!("paint_variant_gold"));
-        assert_eq!(semantic["authored_material_set"]["attributes"][0]["name"], serde_json::json!("DefaultPalette"));
-        assert_eq!(semantic["authored_material_set"]["public_params"][0]["name"], serde_json::json!("RootGlowScale"));
-        assert_eq!(semantic["authored_material_set"]["child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
-        assert_eq!(semantic["authored_attributes"][0]["name"], serde_json::json!("MtlFlags"));
-        assert_eq!(semantic["authored_public_params"][0]["name"], serde_json::json!("WearAmount"));
-        assert_eq!(semantic["authored_child_blocks"][0]["tag"], serde_json::json!("VertexDeform"));
-        assert_eq!(semantic["texture_slots"][0]["authored_child_blocks"][0]["tag"], serde_json::json!("TexMod"));
-        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("active"));
-        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("visible"));
+        assert_eq!(
+            material_set_identity["source_path"],
+            serde_json::json!("Data/Objects/layered.mtl")
+        );
+        assert_eq!(
+            material_set_identity["source_stem"],
+            serde_json::json!("layered")
+        );
+        assert_eq!(
+            material_set_identity["submaterial_index"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            material_set_identity["submaterial_name"],
+            serde_json::json!("layered")
+        );
+        assert_eq!(
+            material_set_identity["slot_name"],
+            serde_json::json!("test")
+        );
+        assert_eq!(
+            paint_override["subgeometry_tag"],
+            serde_json::json!("VariantGold")
+        );
+        assert_eq!(
+            paint_override["paint_item_name"],
+            serde_json::json!("paint_variant_gold")
+        );
+        assert_eq!(
+            semantic["authored_material_set"]["attributes"][0]["name"],
+            serde_json::json!("DefaultPalette")
+        );
+        assert_eq!(
+            semantic["authored_material_set"]["public_params"][0]["name"],
+            serde_json::json!("RootGlowScale")
+        );
+        assert_eq!(
+            semantic["authored_material_set"]["child_blocks"][0]["tag"],
+            serde_json::json!("VertexDeform")
+        );
+        assert_eq!(
+            semantic["authored_attributes"][0]["name"],
+            serde_json::json!("MtlFlags")
+        );
+        assert_eq!(
+            semantic["authored_public_params"][0]["name"],
+            serde_json::json!("WearAmount")
+        );
+        assert_eq!(
+            semantic["authored_child_blocks"][0]["tag"],
+            serde_json::json!("VertexDeform")
+        );
+        assert_eq!(
+            semantic["texture_slots"][0]["authored_child_blocks"][0]["tag"],
+            serde_json::json!("TexMod")
+        );
+        assert_eq!(
+            semantic["activation_state"]["state"],
+            serde_json::json!("active")
+        );
+        assert_eq!(
+            semantic["activation_state"]["reason"],
+            serde_json::json!("visible")
+        );
     }
 
     #[test]
@@ -1275,6 +1527,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1296,7 +1549,9 @@ mod tests {
             "KHR_texture_transform",
         ] {
             assert!(
-                extensions_used.iter().any(|value| value.as_str() == Some(extension)),
+                extensions_used
+                    .iter()
+                    .any(|value| value.as_str() == Some(extension)),
                 "expected {extension} in extensionsUsed"
             );
         }
@@ -1310,7 +1565,8 @@ mod tests {
         assert!((base_scale[0].as_f64().unwrap() - 2.0).abs() < 1e-6);
         assert!((base_scale[1].as_f64().unwrap() - 1.5).abs() < 1e-6);
 
-        let emissive_transform = &material["emissiveTexture"]["extensions"]["KHR_texture_transform"];
+        let emissive_transform =
+            &material["emissiveTexture"]["extensions"]["KHR_texture_transform"];
         let emissive_scale = emissive_transform["scale"]
             .as_array()
             .expect("emissive texture transform scale should be present");
@@ -1319,7 +1575,10 @@ mod tests {
         assert!((emissive_scale[1].as_f64().unwrap() - 1.25).abs() < 1e-6);
 
         assert_eq!(material["normalTexture"]["texCoord"], serde_json::json!(0));
-        assert_eq!(material["occlusionTexture"]["texCoord"], serde_json::json!(1));
+        assert_eq!(
+            material["occlusionTexture"]["texCoord"],
+            serde_json::json!(1)
+        );
 
         let palette = &material["extras"]["semantic"]["palette"];
         let palette_color = palette["resolved_color"]
@@ -1333,7 +1592,10 @@ mod tests {
             .expect("glass palette finish specular should be present");
 
         assert_eq!(palette["material_channel"]["index"], serde_json::json!(0));
-        assert_eq!(palette["material_channel"]["name"], serde_json::json!("glass"));
+        assert_eq!(
+            palette["material_channel"]["name"],
+            serde_json::json!("glass")
+        );
         assert_eq!(palette_color.len(), 3);
         assert!((palette_color[0].as_f64().unwrap() - 0.2).abs() < 1e-5);
         assert!((palette_color[1].as_f64().unwrap() - 0.3).abs() < 1e-5);
@@ -1344,18 +1606,43 @@ mod tests {
         assert!((palette_finish_specular[2].as_f64().unwrap() - 0.32).abs() < 1e-5);
         assert!((palette_finish["glossiness"].as_f64().unwrap() - 0.45).abs() < 1e-5);
 
-        let emissive_strength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
-            .as_f64()
-            .expect("emissive strength should be present");
+        let emissive_strength =
+            material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"]
+                .as_f64()
+                .expect("emissive strength should be present");
         assert!((emissive_strength - 2.4).abs() < 1e-6);
-        assert!((material["extensions"]["KHR_materials_ior"]["ior"].as_f64().unwrap() - 1.65).abs() < 1e-6);
-        assert!((material["extensions"]["KHR_materials_volume"]["thicknessFactor"].as_f64().unwrap() - 0.12).abs() < 1e-6);
-        assert!((material["extensions"]["KHR_materials_volume"]["attenuationDistance"].as_f64().unwrap() - 0.75).abs() < 1e-6);
+        assert!(
+            (material["extensions"]["KHR_materials_ior"]["ior"]
+                .as_f64()
+                .unwrap()
+                - 1.65)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (material["extensions"]["KHR_materials_volume"]["thicknessFactor"]
+                .as_f64()
+                .unwrap()
+                - 0.12)
+                .abs()
+                < 1e-6
+        );
+        assert!(
+            (material["extensions"]["KHR_materials_volume"]["attenuationDistance"]
+                .as_f64()
+                .unwrap()
+                - 0.75)
+                .abs()
+                < 1e-6
+        );
 
         let fallbacks = material["extras"]["semantic"]["bundled_fallbacks"]
             .as_array()
             .expect("bundled fallback tags should be present");
-        let fallback_names: Vec<&str> = fallbacks.iter().filter_map(|value| value.as_str()).collect();
+        let fallback_names: Vec<&str> = fallbacks
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
         assert!(fallback_names.contains(&"stencil_fallback"));
         assert!(fallback_names.contains(&"screen_emissive_placeholder"));
         assert!(fallback_names.contains(&"occlusion_from_mask"));
@@ -1373,6 +1660,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1383,12 +1671,16 @@ mod tests {
         .expect("write_glb failed");
 
         let json = glb_json(&glb);
-        let transform = &json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]["KHR_texture_transform"];
+        let transform = &json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"]
+            ["KHR_texture_transform"];
         let transform_object = transform
             .as_object()
             .expect("base color texture transform should be present");
 
-        assert_eq!(json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"], serde_json::json!(0));
+        assert_eq!(
+            json["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["texCoord"],
+            serde_json::json!(0)
+        );
         assert!(
             transform_object.get("texCoord").is_none(),
             "UV0 texture transforms must omit texCoord instead of serializing null"
@@ -1407,6 +1699,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1418,8 +1711,14 @@ mod tests {
 
         let json = glb_json(&glb);
         let semantic = &json["materials"][0]["extras"]["semantic"];
-        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
-        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("nodraw"));
+        assert_eq!(
+            semantic["activation_state"]["state"],
+            serde_json::json!("inactive")
+        );
+        assert_eq!(
+            semantic["activation_state"]["reason"],
+            serde_json::json!("nodraw")
+        );
     }
 
     #[test]
@@ -1434,6 +1733,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1449,9 +1749,18 @@ mod tests {
             .as_array()
             .expect("mesh primitives should be present");
 
-        assert!(primitives.is_empty(), "fully transparent materials should not emit renderable primitives");
-        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
-        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("semantic_hidden"));
+        assert!(
+            primitives.is_empty(),
+            "fully transparent materials should not emit renderable primitives"
+        );
+        assert_eq!(
+            semantic["activation_state"]["state"],
+            serde_json::json!("inactive")
+        );
+        assert_eq!(
+            semantic["activation_state"]["reason"],
+            serde_json::json!("semantic_hidden")
+        );
     }
 
     #[test]
@@ -1466,6 +1775,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1477,7 +1787,10 @@ mod tests {
 
         let json = glb_json(&glb);
         let semantic = &json["materials"][0]["extras"]["semantic"];
-        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("inactive"));
+        assert_eq!(
+            semantic["activation_state"]["state"],
+            serde_json::json!("inactive")
+        );
         assert_eq!(
             semantic["activation_state"]["reason"],
             serde_json::json!("missing_base_color_texture"),
@@ -1500,6 +1813,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1515,9 +1829,19 @@ mod tests {
             .as_array()
             .expect("mesh primitives should be present");
 
-        assert_eq!(primitives.len(), 1, "decomposed GLBs should retain decal primitives for sidecar reconstruction");
-        assert_eq!(semantic["activation_state"]["state"], serde_json::json!("active"));
-        assert_eq!(semantic["activation_state"]["reason"], serde_json::json!("visible"));
+        assert_eq!(
+            primitives.len(),
+            1,
+            "decomposed GLBs should retain decal primitives for sidecar reconstruction"
+        );
+        assert_eq!(
+            semantic["activation_state"]["state"],
+            serde_json::json!("active")
+        );
+        assert_eq!(
+            semantic["activation_state"]["reason"],
+            serde_json::json!("visible")
+        );
     }
 
     #[test]
@@ -1537,6 +1861,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children,
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| Some(shared_textures()),
@@ -1591,6 +1916,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: vec![child_a, child_b],
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1602,12 +1928,23 @@ mod tests {
 
         let json = glb_json(&glb);
         let accessor_count = json["accessors"].as_array().map_or(0, |items| items.len());
-        let buffer_view_count = json["bufferViews"].as_array().map_or(0, |items| items.len());
+        let buffer_view_count = json["bufferViews"]
+            .as_array()
+            .map_or(0, |items| items.len());
         let mesh_count = json["meshes"].as_array().map_or(0, |items| items.len());
 
-        assert_eq!(mesh_count, 3, "root plus two palette-specific meshes should still be emitted");
-        assert_eq!(accessor_count, 3, "palette variants should reuse shared geometry accessors instead of duplicating them");
-        assert_eq!(buffer_view_count, 3, "palette variants should reuse shared geometry buffer views instead of duplicating them");
+        assert_eq!(
+            mesh_count, 3,
+            "root plus two palette-specific meshes should still be emitted"
+        );
+        assert_eq!(
+            accessor_count, 3,
+            "palette variants should reuse shared geometry accessors instead of duplicating them"
+        );
+        assert_eq!(
+            buffer_view_count, 3,
+            "palette variants should reuse shared geometry buffer views instead of duplicating them"
+        );
     }
 
     #[test]
@@ -1634,6 +1971,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1653,6 +1991,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1662,16 +2001,25 @@ mod tests {
         )
         .expect("write_glb failed");
 
-        assert_eq!(first_glb, second_glb, "decomposed GLBs should stay byte-identical when only instance metadata changes");
+        assert_eq!(
+            first_glb, second_glb,
+            "decomposed GLBs should stay byte-identical when only instance metadata changes"
+        );
 
         let json = glb_json(&first_glb);
-        assert!(json["asset"]["extras"]["export_timestamp_unix"].is_null(), "decomposed GLBs should omit volatile export timestamps");
+        assert!(
+            json["asset"]["extras"]["export_timestamp_unix"].is_null(),
+            "decomposed GLBs should omit volatile export timestamps"
+        );
         let node_with_extras = json["nodes"]
             .as_array()
             .into_iter()
             .flatten()
             .find(|node| node["extras"].is_object());
-        assert!(node_with_extras.is_none(), "decomposed GLBs should not embed per-instance root entity metadata");
+        assert!(
+            node_with_extras.is_none(),
+            "decomposed GLBs should not embed per-instance root entity metadata"
+        );
     }
 
     #[test]
@@ -1690,6 +2038,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1713,6 +2062,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1732,6 +2082,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1751,6 +2102,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: Vec::new(),
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| None,
@@ -1856,6 +2208,7 @@ mod tests {
                         skeleton_bones: Vec::new(),
                         children: Vec::new(),
                         interiors: crate::pipeline::LoadedInteriors::default(),
+                        animations: Vec::new(),
                     },
                     &mut GlbLoaders {
                         load_textures: &mut |_, _| None,
@@ -1882,6 +2235,7 @@ mod tests {
                         skeleton_bones: Vec::new(),
                         children: Vec::new(),
                         interiors: crate::pipeline::LoadedInteriors::default(),
+                        animations: Vec::new(),
                     },
                     &mut GlbLoaders {
                         load_textures: &mut |_, _| None,
@@ -1908,6 +2262,7 @@ mod tests {
                         skeleton_bones: Vec::new(),
                         children: Vec::new(),
                         interiors: crate::pipeline::LoadedInteriors::default(),
+                        animations: Vec::new(),
                     },
                     &mut GlbLoaders {
                         load_textures: &mut |_, _| None,
@@ -1929,6 +2284,7 @@ mod tests {
                         skeleton_bones: Vec::new(),
                         children: Vec::new(),
                         interiors: crate::pipeline::LoadedInteriors::default(),
+                        animations: Vec::new(),
                     },
                     &mut GlbLoaders {
                         load_textures: &mut |_, _| None,
@@ -1946,7 +2302,11 @@ mod tests {
             root.validate(&root, json::Path::new, &mut |path, error| {
                 issues.push(format!("{}:{error:?}", path().as_str()));
             });
-            assert!(issues.is_empty(), "{label} GLB should validate cleanly: {}", issues.join(", "));
+            assert!(
+                issues.is_empty(),
+                "{label} GLB should validate cleanly: {}",
+                issues.join(", ")
+            );
         }
     }
 
@@ -2017,6 +2377,7 @@ mod tests {
                 skeleton_bones: Vec::new(),
                 children: vec![child],
                 interiors: crate::pipeline::LoadedInteriors::default(),
+                animations: Vec::new(),
             },
             &mut GlbLoaders {
                 load_textures: &mut |_, _| {
@@ -2034,7 +2395,10 @@ mod tests {
         )
         .expect("write_glb failed");
 
-        assert_eq!(child_texture_loads, 0, "child payloads with preloaded textures should not trigger texture reloads during GLB packing");
+        assert_eq!(
+            child_texture_loads, 0,
+            "child payloads with preloaded textures should not trigger texture reloads during GLB packing"
+        );
     }
 
     #[test]
@@ -2107,7 +2471,8 @@ mod tests {
             model_max: [3.0, 1.0, 0.0],
             scaling_min: [0.0; 3],
             scaling_max: [3.0, 1.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
             submeshes: vec![
                 SubMesh {
                     material_name: Some("mat_a".into()),
@@ -2172,8 +2537,7 @@ mod tests {
             material_indices: vec![0, 0],
         };
 
-        let glb =
-            write_glb_simple(&mesh, Some(&nmc)).expect("write_glb with NMC failed");
+        let glb = write_glb_simple(&mesh, Some(&nmc)).expect("write_glb with NMC failed");
 
         // Verify GLB header
         assert_eq!(&glb[0..4], b"glTF");
@@ -2236,7 +2600,8 @@ mod tests {
             model_max: [1.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [1.0; 3],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
             submeshes: vec![SubMesh {
                 material_name: None,
                 material_id: 0,

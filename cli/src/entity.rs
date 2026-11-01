@@ -29,7 +29,7 @@ fn export_entity_name(name: &str) -> String {
         .to_string()
 }
 
-fn sanitize_export_name(name: &str) -> String {
+pub(crate) fn sanitize_export_name(name: &str) -> String {
     let mut cleaned = String::new();
     let mut last_was_space = false;
 
@@ -66,7 +66,8 @@ fn decomposed_package_rel_path(export_name: &str, opts: &starbreaker_3d::ExportO
     }
 }
 
-fn prepare_decomposed_output_root(output_root: &PathBuf, package_name: &Path) -> Result<()> {
+pub(crate) fn prepare_decomposed_output_root(output_root: &PathBuf, package_name: impl AsRef<Path>) -> Result<()> {
+    let package_name = package_name.as_ref();
     if output_root.exists() {
         if output_root.is_file() {
             return Err(CliError::InvalidInput(format!(
@@ -90,7 +91,7 @@ fn should_skip_existing_decomposed_asset(
     skip_existing_assets && file.kind.is_reusable_asset()
 }
 
-fn write_decomposed_file(
+pub(crate) fn write_decomposed_file(
     file: &starbreaker_3d::ExportedFile,
     output_path: &PathBuf,
     skip_existing_assets: bool,
@@ -114,6 +115,11 @@ fn write_decomposed_file(
         .map_err(|e| CliError::IoPath { source: e, path: output_path.display().to_string() })?;
     apply_source_mtime(output_path, p4k, &file.relative_path)?;
     Ok(())
+}
+
+fn should_write_ui_only_decomposed_file(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("data/ui/") || normalized.ends_with("/scene.json")
 }
 
 fn collect_existing_decomposed_assets(output_root: &Path, p4k: &MappedP4k) -> Result<HashSet<String>> {
@@ -268,7 +274,9 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_decomposed_output_root, source_asset_candidates};
+    use super::{
+        prepare_decomposed_output_root, should_write_ui_only_decomposed_file, source_asset_candidates,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -310,6 +318,29 @@ mod tests {
         assert_eq!(std::fs::read(target_package.join("scene.json")).unwrap(), b"old");
         assert_eq!(std::fs::read(sibling_package.join("scene.json")).unwrap(), b"sibling");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ui_only_filter_includes_ui_assets_and_scene_sidecars() {
+        assert!(should_write_ui_only_decomposed_file(
+            "Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_door_small_drak.png"
+        ));
+        assert!(should_write_ui_only_decomposed_file(
+            "data/ui/generated/ship/drak/clipper/buildingblocks_canvas_i_door_small_drak.png"
+        ));
+        assert!(should_write_ui_only_decomposed_file(
+            "Packages/DRAK Clipper_LOD0_TEX0/scene.json"
+        ));
+    }
+
+    #[test]
+    fn ui_only_filter_excludes_non_ui_assets() {
+        assert!(!should_write_ui_only_decomposed_file(
+            "Data/Objects/ships/drak/clipper/clipper_lod0.blend"
+        ));
+        assert!(!should_write_ui_only_decomposed_file(
+            "Data/Textures/ships/drak/clipper/albedo.dds"
+        ));
     }
 }
 
@@ -430,6 +461,11 @@ pub enum EntityCommand {
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
     },
+    /// Validate an existing decomposed entity export directory
+    Validate {
+        /// Decomposed export root directory
+        output: PathBuf,
+    },
 }
 
 impl EntityCommand {
@@ -453,8 +489,53 @@ impl EntityCommand {
                 ..
             } => export(name, output, p4k, dump_hierarchy, opts),
             Self::Loadout { name, p4k } => loadout(name, p4k),
+            Self::Validate { output } => validate(output),
         }
     }
+}
+
+fn validate(output: PathBuf) -> Result<()> {
+    let report = starbreaker_3d::validate_decomposed_export(&output)?;
+    println!("Valid:              {}", report.is_valid);
+    println!("Meshes:             {}", report.mesh_count);
+    println!("Lights:             {}", report.light_count);
+    println!("Empties:            {}", report.empty_count);
+    println!("Materials:          {}", report.material_count);
+    println!("Vertex groups:      {}", report.vertex_group_count);
+    println!("Warnings:           {}", report.warnings.len());
+    println!("Errors:             {}", report.errors.len());
+
+    if !report.metadata.is_empty() {
+        println!();
+        println!("Metadata:");
+        let mut metadata: Vec<_> = report.metadata.iter().collect();
+        metadata.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        for (key, value) in metadata {
+            println!("  {key}: {value}");
+        }
+    }
+
+    if !report.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warning in &report.warnings {
+            println!("  {warning}");
+        }
+    }
+
+    if !report.errors.is_empty() {
+        println!();
+        println!("Errors:");
+        for error in &report.errors {
+            println!("  {error}");
+        }
+        return Err(CliError::InvalidInput(format!(
+            "decomposed export validation failed: {} error(s)",
+            report.errors.len()
+        )));
+    }
+
+    Ok(())
 }
 
 fn find_candidates<'a>(db: &'a Database, search: &str) -> Result<Vec<&'a Record>> {
@@ -590,6 +671,9 @@ fn export(
             let package_name = decomposed_package_rel_path(&export_name, &export_opts);
             prepare_decomposed_output_root(&output, &package_name)?;
             for file in &decomposed.files {
+                if opts.ui_only_files && !should_write_ui_only_decomposed_file(&file.relative_path) {
+                    continue;
+                }
                 let output_path = output.join(&file.relative_path);
                 if let Some(parent) = output_path.parent() {
                     std::fs::create_dir_all(parent)
@@ -613,8 +697,9 @@ fn export_geometry(
     material: String,
     opts: ExportOpts,
 ) -> Result<()> {
-    let (p4k, _) = load_dcb_bytes(p4k_path.as_deref(), None)?;
+    let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
     let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for geometry export".into()))?;
+    let db = Database::from_bytes(&dcb_bytes)?;
     let mut export_opts = starbreaker_3d::ExportOptions::from(&opts);
     export_opts.kind = starbreaker_3d::ExportKind::Decomposed;
     let export_name = sanitize_export_name(&export_entity_name(&name));
@@ -631,6 +716,7 @@ fn export_geometry(
             read_reusable_decomposed_asset(&output_dir, paths, relative_path)
         });
     let result = starbreaker_3d::export_geometry_decomposed(
+        &db,
         &p4k,
         &name,
         &geometry,
@@ -736,6 +822,9 @@ fn export_blend(
             .ok_or_else(|| CliError::InvalidInput("entity export returned no decomposed files".into()))?;
 
         for file in &decomposed.files {
+            if opts.ui_only_files && !should_write_ui_only_decomposed_file(&file.relative_path) {
+                continue;
+            }
             let output_path = output_dir.join(&file.relative_path);
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| CliError::IoPath {
@@ -803,20 +892,12 @@ fn export_blend(
     let mesh_bytes = p4k.read(entry)
         .map_err(|e| CliError::InvalidInput(format!("Failed to read mesh data: {e}")))?;
 
-    let mesh = starbreaker_3d::parse_skin(&mesh_bytes)
-        .map_err(|e| CliError::InvalidInput(format!("Failed to parse mesh: {e}")))?;
+    // The metadata file (.skin / .cgf) holds the NMC and the bone table.
+    let metadata = p4k.entry_case_insensitive(&p4k_base).and_then(|e| p4k.read(e).ok());
 
-    eprintln!(
-        "Mesh: {} verts, {} triangles, {} submeshes, uvs={}, colors={}",
-        mesh.positions.len(),
-        mesh.indices.len() / 3,
-        mesh.submeshes.len(),
-        mesh.uvs.is_some(),
-        mesh.colors.is_some(),
-    );
-
-    // Bundled blend export (single monolithic mesh).
-    let blend_bytes = crate::blend::mesh_to_blend(&export_name, &mesh);
+    // Bundled blend export: the shared .blend mesh writer, as decomposed exports use.
+    let blend_bytes = starbreaker_3d::skin_to_blend(&export_name, &mesh_bytes, metadata.as_deref())
+        .map_err(|e| CliError::InvalidInput(format!("Failed to convert mesh: {e}")))?;
     let output = output.unwrap_or_else(|| PathBuf::from(format!("{export_name}.blend")));
     std::fs::write(&output, &blend_bytes)
         .map_err(|e| CliError::IoPath { source: e, path: output.display().to_string() })?;

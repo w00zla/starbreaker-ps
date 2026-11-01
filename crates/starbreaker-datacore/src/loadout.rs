@@ -54,6 +54,9 @@ pub struct SubGeometryVariant {
     pub tag: String,
     pub geometry_path: String,
     pub material_path: String,
+    /// `SGeometryDataParams.DeformerType` (e.g. `Standard`, `WD_Elastic`,
+    /// `WD_ElasticNUScaling`); empty when absent.
+    pub deformer_type: String,
 }
 
 /// Pre-built index for fast entity lookups and cached compiled query paths.
@@ -139,12 +142,13 @@ impl<'a> EntityIndex<'a> {
     /// Query SubGeometry variants from an entity's SGeometryResourceParams.
     /// Returns tagged geometry variants (e.g., "right" -> Right.cga, "left" -> Left.cga).
     pub fn query_sub_geometry(&self, record: &Record) -> Vec<SubGeometryVariant> {
-        query_sub_geometry(self.db, record)
+        sub_geometry_variants(self.db, record)
     }
 }
 
-/// SubGeometry variants of an entity's SGeometryResourceParams.
-fn query_sub_geometry(db: &Database, record: &Record) -> Vec<SubGeometryVariant> {
+/// Every SubGeometry variant of a record's `SGeometryResourceParams`
+/// (nested tags joined with spaces). Needs no [`EntityIndex`].
+pub fn sub_geometry_variants(db: &Database, record: &Record) -> Vec<SubGeometryVariant> {
     // Query the full SGeometryResourceParams component, then walk to SubGeometry.
     // Querying just ".Geometry" may truncate the SubGeometry array.
     let compiled = match db.compile_path::<Value>(
@@ -177,6 +181,14 @@ fn query_sub_geometry(db: &Database, record: &Record) -> Vec<SubGeometryVariant>
         }
     }
     variants
+}
+
+/// Borrow any field from a Value::Object.
+fn get_field<'v, 'a>(val: &'v Value<'a>, name: &str) -> Option<&'v Value<'a>> {
+    if let Value::Object { fields, .. } = val {
+        return fields.iter().find(|(k, _)| *k == name).map(|(_, v)| v);
+    }
+    None
 }
 
 /// Extract a string field from a Value::Object.
@@ -466,6 +478,14 @@ fn resolve_sub_geometry(idx: &EntityIndex, children: &mut [LoadoutNode]) {
 
     // Second pass: for unmatched children, assign the variant not claimed by siblings.
     for &ui in &unmatched {
+        if !should_use_unclaimed_sub_geometry_fallback(children[ui].geometry_path.as_deref()) {
+            log::debug!(
+                "  SubGeometry: {} kept default geometry {} after selector miss",
+                children[ui].entity_name,
+                children[ui].geometry_path.as_deref().unwrap_or("")
+            );
+            continue;
+        }
         let variants = idx.query_sub_geometry(&children[ui].record);
         let entity = children[ui].entity_name.clone();
         // Collect geometry paths already assigned to siblings with the same entity
@@ -564,6 +584,10 @@ fn geometry_manufacturer(path: &str) -> Option<String> {
     (!manufacturer.contains('.')).then(|| manufacturer.to_string())
 }
 
+fn should_use_unclaimed_sub_geometry_fallback(geometry_path: Option<&str>) -> bool {
+    geometry_path.is_none()
+}
+
 fn has_multiple_geometry_variants(variants: &[SubGeometryVariant]) -> bool {
     let mut geometry_paths = HashSet::new();
     for variant in variants {
@@ -616,6 +640,12 @@ fn collect_sub_geometry_variants(
     }
 
     let (geom, mtl) = extract_sub_geometry_paths(node);
+    let deformer_type = get_object_field(node, "Geometry")
+        .and_then(|gd| match get_field(gd, "DeformerType") {
+            Some(Value::Enum(e)) | Some(Value::String(e)) => Some((*e).to_owned()),
+            _ => None,
+        })
+        .unwrap_or_default();
     if let Some(geometry_path) = geom {
         let tag = combined_tags.join(" ");
         if !tag.is_empty()
@@ -628,6 +658,7 @@ fn collect_sub_geometry_variants(
                 tag,
                 geometry_path,
                 material_path: mtl.unwrap_or_default(),
+                deformer_type,
             });
         }
     }
@@ -713,7 +744,7 @@ pub fn select_variants_by_port_flags(
         if child.port_flags.is_empty() {
             child.port_flags = flags.clone();
         }
-        let variants = query_sub_geometry(db, &child.record);
+        let variants = sub_geometry_variants(db, &child.record);
         if variants.is_empty() || !variants_belong_to_item(&child.entity_name, child.geometry_path.as_deref(), &variants) {
             continue;
         }
@@ -955,21 +986,25 @@ mod tests {
                 tag: "front".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Left.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "front left".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Left.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "front right".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Front_Right.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "rear".to_string(),
                 geometry_path: "Objects/Ships/Vulture/Rear.cga".to_string(),
                 material_path: String::new(),
+                deformer_type: String::new(),
             },
         ];
 
@@ -1000,6 +1035,7 @@ mod tests {
                 tag: tag.to_string(),
                 geometry_path: format!("objects/retro_{tag}.cga"),
                 material_path: String::new(),
+                deformer_type: String::new(),
             })
             .collect();
 
@@ -1021,6 +1057,7 @@ mod tests {
             tag: tag.to_string(),
             geometry_path: path.to_string(),
             material_path: String::new(),
+            deformer_type: String::new(),
         };
         let winglets = vec![
             variant("wing left", "objects/spaceships/ships/orig/300_series/orig_350r_winglet_wing_left.cga"),
@@ -1089,11 +1126,13 @@ mod tests {
                 tag: "brown01".to_string(),
                 geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
                 material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_mirage_mat.mtl".to_string(),
+                deformer_type: String::new(),
             },
             SubGeometryVariant {
                 tag: "red01".to_string(),
                 geometry_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter.cgf".to_string(),
                 material_path: "Objects/fps_weapons/gadgets/grin/multitool/Cutter/gdgt_fps_grin_multitool_cutter_bloodline_mat.mtl".to_string(),
+                deformer_type: String::new(),
             },
         ];
 
@@ -1107,10 +1146,19 @@ mod tests {
             geometry_path: "objects/spaceships/ships/drak/cutlass/drak_cutlass_door_side_left.cga"
                 .to_string(),
             material_path: String::new(),
+            deformer_type: String::new(),
         }];
 
         assert!(should_attempt_sub_geometry_resolution(None, &variants));
         assert!(!should_attempt_sub_geometry_resolution(None, &[]));
+    }
+
+    #[test]
+    fn unclaimed_sub_geometry_fallback_preserves_default_geometry() {
+        assert!(!should_use_unclaimed_sub_geometry_fallback(Some(
+            "Objects/fps_weapons/attachments/magazines/behr/mgzn_s03_behr_5rb_01.cgf"
+        )));
+        assert!(should_use_unclaimed_sub_geometry_fallback(None));
     }
 }
 

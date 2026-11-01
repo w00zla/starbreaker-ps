@@ -9,6 +9,9 @@ fn assign_decal_materials_basic() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![
                 [0.0, 0.0, 0.0],
@@ -26,7 +29,8 @@ fn assign_decal_materials_basic() {
             model_max: [1.0, 1.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [1.0, 1.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -40,6 +44,7 @@ fn assign_decal_materials_basic() {
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -52,6 +57,9 @@ fn assign_decal_materials_no_materials() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],
@@ -65,7 +73,8 @@ fn assign_decal_materials_no_materials() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -79,6 +88,7 @@ fn assign_decal_materials_no_materials() {
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -91,6 +101,9 @@ fn assign_decal_materials_empty_mesh() {
         entity_name: "empty_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![],
             indices: vec![],
@@ -104,7 +117,8 @@ fn assign_decal_materials_empty_mesh() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -118,6 +132,7 @@ fn assign_decal_materials_empty_mesh() {
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -130,6 +145,9 @@ fn assign_decal_materials_multiple_children() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],
@@ -143,7 +161,8 @@ fn assign_decal_materials_multiple_children() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -169,7 +188,8 @@ fn assign_decal_materials_multiple_children() {
                     model_max: [0.0, 0.0, 0.0],
                     scaling_min: [0.0, 0.0, 0.0],
                     scaling_max: [0.0, 0.0, 0.0],
-                    skin_weights: None,
+                    skin: None,
+                    morph_targets: Vec::new(),
                 },
                 materials: None,
                 nmc: None,
@@ -189,11 +209,13 @@ fn assign_decal_materials_multiple_children() {
                 docking_collar_port: None,
                 geometry_path: "/test".to_string(),
                 material_path: "/test".to_string(),
+                ui_bindings: Vec::new(),
             },
         ],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);
@@ -206,6 +228,9 @@ fn assign_decal_materials_with_child_mesh() {
         entity_name: "test_ship".to_string(),
         geometry_path: "/test".to_string(),
         material_path: "/test".to_string(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
         root_mesh: Mesh {
             positions: vec![[0.0, 0.0, 0.0]],
             indices: vec![],
@@ -219,7 +244,8 @@ fn assign_decal_materials_with_child_mesh() {
             model_max: [0.0, 0.0, 0.0],
             scaling_min: [0.0, 0.0, 0.0],
             scaling_max: [0.0, 0.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         },
         root_materials: None,
         root_nmc: None,
@@ -249,7 +275,8 @@ fn assign_decal_materials_with_child_mesh() {
                     model_max: [1.0, 1.0, 1.0],
                     scaling_min: [0.0, 0.0, 0.0],
                     scaling_max: [1.0, 1.0, 1.0],
-                    skin_weights: None,
+                    skin: None,
+                    morph_targets: Vec::new(),
                 },
                 materials: None,
                 nmc: None,
@@ -269,11 +296,13 @@ fn assign_decal_materials_with_child_mesh() {
                 docking_collar_port: None,
                 geometry_path: "/test".to_string(),
                 material_path: "/test".to_string(),
+                ui_bindings: Vec::new(),
             },
         ],
         interiors: LoadedInteriors::default(),
         paint_variants: vec![],
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
     };
 
     let result = assign_decal_materials_to_vertex_groups(&input);

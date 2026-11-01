@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { armorCategories, selectedExportEntities } from "../lib/armor-export";
 import { useExportStore } from "../stores/export-store";
 import { ResizeHandle } from "../components/resize-handle";
 import { BlenderTargetSelector } from "../components/blender-target-selector";
@@ -18,7 +19,11 @@ import {
   type BlenderAddonTargets,
 } from "../lib/commands";
 
-export function ExportView() {
+export function ExportView({ armorOnly = false }: { armorOnly?: boolean }) {
+  const [armorCategory, setArmorCategory] = useState(0);
+  const [armorSearch, setArmorSearch] = useState("");
+  const [armorBody, setArmorBody] = useState("Male");
+  const [scanError, setScanError] = useState<string | null>(null);
   const [optionsWidth, setOptionsWidth] = useState(260);
   const [addonTargets, setAddonTargets] = useState<BlenderAddonTargets | null>(null);
   const [addonBusy, setAddonBusy] = useState(false);
@@ -29,10 +34,13 @@ export function ExportView() {
   const [selectedAddonsPath, setSelectedAddonsPath] = useState<string | null>(null);
   const [confirmMode, setConfirmMode] = useState<"install" | "uninstall">("install");
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const categories = useExportStore((s) => s.categories);
+  const allCategories = useExportStore((s) => s.categories);
+  const categories = useMemo(() => armorOnly ? armorCategories(allCategories) : allCategories, [allCategories, armorOnly]);
   const categoriesLoading = useExportStore((s) => s.categoriesLoading);
-  const activeCategory = useExportStore((s) => s.activeCategory);
-  const setActiveCategory = useExportStore((s) => s.setActiveCategory);
+  const exportCategory = useExportStore((s) => s.activeCategory);
+  const setExportCategory = useExportStore((s) => s.setActiveCategory);
+  const activeCategory = armorOnly ? armorCategory : exportCategory;
+  const setActiveCategory = armorOnly ? setArmorCategory : setExportCategory;
   const setCategories = useExportStore((s) => s.setCategories);
   const setCategoriesLoading = useExportStore((s) => s.setCategoriesLoading);
 
@@ -41,14 +49,17 @@ export function ExportView() {
   const selectAllFiltered = useExportStore((s) => s.selectAllFiltered);
   const clearFiltered = useExportStore((s) => s.clearFiltered);
 
-  const search = useExportStore((s) => s.search);
-  const setSearch = useExportStore((s) => s.setSearch);
+  const exportSearch = useExportStore((s) => s.search);
+  const setExportSearch = useExportStore((s) => s.setSearch);
+  const search = armorOnly ? armorSearch : exportSearch;
+  const setSearch = armorOnly ? setArmorSearch : setExportSearch;
   const hideNpcVariants = useExportStore((s) => s.hideNpcVariants);
   const setHideNpcVariants = useExportStore((s) => s.setHideNpcVariants);
 
   const lod = useExportStore((s) => s.lod);
   const mip = useExportStore((s) => s.mip);
-  const exportKind = useExportStore((s) => s.exportKind);
+  const configuredExportKind = useExportStore((s) => s.exportKind);
+  const exportKind = armorOnly ? "decomposed" : configuredExportKind;
   const materialMode = useExportStore((s) => s.materialMode);
   const includeAttachments = useExportStore((s) => s.includeAttachments);
   const includeInterior = useExportStore((s) => s.includeInterior);
@@ -89,11 +100,13 @@ export function ExportView() {
 
   // Load categories on mount
   useEffect(() => {
+    setScanError(null);
     setCategoriesLoading(true);
     scanCategories()
       .then((cats) => setCategories(cats))
       .catch((err) => {
         console.error("Failed to scan categories:", err);
+        setScanError(String(err));
         setCategoriesLoading(false);
       });
   }, [setCategoriesLoading, setCategories]);
@@ -171,7 +184,8 @@ export function ExportView() {
     : [];
 
   const selectedInCategory = filtered.filter((e) => selected.has(e.id)).length;
-  const totalSelected = selected.size;
+  const selectedEntities = selectedExportEntities(categories, selected);
+  const totalSelected = selectedEntities.length;
 
   const canExport = totalSelected > 0 && outputDir !== null && !exporting;
   const isBlendExport = exportKind === "decomposed";
@@ -186,9 +200,8 @@ export function ExportView() {
   const progressBarFraction = allDone ? progressFraction : Math.min(progressFraction, 0.99);
 
   const handleExport = () => {
-    const allEntities = categories.flatMap((c) => c.entities);
-    const selectedEntities = allEntities.filter((e) => selected.has(e.id));
     const request: ExportRequest = {
+      geometry_tag: armorOnly && armorBody ? armorBody : undefined,
       record_ids: selectedEntities.map((e) => e.id),
       names: selectedEntities.map((e) => e.display_name ?? e.name),
       output_dir: outputDir!,
@@ -197,7 +210,7 @@ export function ExportView() {
       export_kind: exportKind,
       material_mode: isBlendExport ? "all" : materialMode,
       include_attachments: isBlendExport ? true : includeAttachments,
-      include_interior: includeInterior,
+      include_interior: armorOnly ? false : includeInterior,
       include_lights: isBlendExport ? true : includeLights,
       threads,
       overwrite_existing_assets: overwriteExistingAssets,
@@ -413,7 +426,7 @@ export function ExportView() {
         <div className="flex items-center gap-2 px-3 border-b border-border bg-bg-alt shrink-0" style={{ height: "var(--toolbar-height)" }}>
           <input
             type="text"
-            placeholder="Search entities..."
+            placeholder={armorOnly ? "Search armor and undersuits..." : "Search entities..."}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="flex-1 bg-surface rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-faint outline-none focus:ring-1 focus:ring-ring"
@@ -444,7 +457,7 @@ export function ExportView() {
           <span className="text-[11px] text-text-faint tabular-nums shrink-0">
             {selectedInCategory}/{filtered.length}
           </span>
-          <div className="flex gap-1 shrink-0">
+          <div className="flex gap-1 overflow-x-auto">
             {categoriesLoading ? (
               <span className="text-xs text-text-dim px-3 py-1">
                 Scanning...
@@ -475,6 +488,10 @@ export function ExportView() {
 
         {/* Entity list */}
         <div className="flex-1 overflow-y-auto px-1">
+          {scanError && <p role="alert" className="p-3 text-sm text-danger">Could not load items: {scanError}</p>}
+          {!categoriesLoading && !scanError && filtered.length === 0 && (
+            <p className="p-3 text-sm text-text-dim">{armorOnly ? "No armor matches these filters in the loaded archive." : "No entities match these filters."}</p>
+          )}
           {filtered.map((entity) => {
             const isSelected = selected.has(entity.id);
             return (
@@ -511,8 +528,24 @@ export function ExportView() {
       <div className="shrink-0 border-l border-border bg-bg-alt flex flex-col" style={{ width: optionsWidth }}>
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-5">
           <h2 className="text-xs font-semibold text-primary uppercase tracking-wider">
-            Export Options
+            {armorOnly ? "Armor · Blender export" : "Export Options"}
           </h2>
+          {armorOnly && (
+            <div className="flex flex-col gap-2">
+            <p className="text-xs text-text-sub leading-relaxed">
+              Exports native .blend assets with materials, textures and palettes.
+              Open the package scene.blend with the StarBreaker add-on enabled
+              to load its materials automatically.
+            </p>
+            <label className="text-xs text-text-sub" htmlFor="armor-body">Body variant</label>
+            <select id="armor-body" value={armorBody} onChange={(event) => setArmorBody(event.target.value)} className="bg-surface rounded-md p-2 text-sm text-text">
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="">Inventory / default model</option>
+            </select>
+            <p className="text-[10px] text-text-faint">Worn variants use DataCore tags. Items without the selected variant report an error.</p>
+            </div>
+          )}
 
           <div className="rounded-md border border-border bg-surface/40 p-3 flex flex-col gap-2.5">
             <div className="flex items-center justify-between gap-2">
@@ -661,7 +694,7 @@ export function ExportView() {
           </div>
 
           {/* Export Kind */}
-          <div className="flex flex-col gap-1.5">
+          {!armorOnly && <div className="flex flex-col gap-1.5">
             <span className="text-xs text-text-sub">Package</span>
             <div className="flex flex-col gap-1">
               {([
@@ -687,7 +720,7 @@ export function ExportView() {
                 </label>
               ))}
             </div>
-          </div>
+          </div>}
 
           {isBlendExport && (
             <div className="flex flex-col gap-3">
@@ -742,7 +775,7 @@ export function ExportView() {
           )}
 
           {/* Toggles */}
-          <div className="flex flex-col gap-2">
+          {!armorOnly && <div className="flex flex-col gap-2">
             <label className="flex items-center gap-2.5 cursor-pointer group">
               <input
                 type="checkbox"
@@ -804,7 +837,7 @@ export function ExportView() {
                 </label>
               </>
             )}
-          </div>
+          </div>}
 
           {/* Output directory */}
           <div className="flex flex-col gap-1.5">
@@ -880,7 +913,7 @@ export function ExportView() {
             `}
           >
             {totalSelected === 0
-              ? "Select entities to export"
+              ? (armorOnly ? "Select armor to export" : "Select entities to export")
               : outputDir === null
                 ? "Choose output directory"
                 : `Export ${totalSelected} model${totalSelected !== 1 ? "s" : ""}`}

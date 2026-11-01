@@ -218,12 +218,14 @@ fn parse_dba_metadata(data: &[u8]) -> Vec<(String, DbaMetaEntry)> {
         });
     }
 
-    // The names region starts at the next 8-byte boundary. Since
-    // 4 + count*48 is always 4 mod 8 that is 4 pad bytes, which are NUL in
-    // Scorpius.dba but carry stale data in ~44% of shipped DBAs (e.g. the
-    // float 0x3F7ACE02 in constellation.dba), so skip by alignment rather
-    // than by scanning for NULs -- otherwise the first clip loses its name.
+    // The names region starts at the next 8-byte boundary (entries end 4
+    // bytes past one: 4 + 48·count). The padding is not always NUL (Scorpius
+    // has 4 NULs, character_select_screen.dba `53 0C CC BC`), so align rather
+    // than skip NULs; then skip any further NULs.
     let mut pos = entries_end.next_multiple_of(8);
+    while pos < data.len() && data[pos] == 0 {
+        pos += 1;
+    }
 
     let mut names = Vec::with_capacity(count);
     for _ in 0..count {

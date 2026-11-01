@@ -87,19 +87,19 @@ pub fn parse_child_object_containers(data: &[u8]) -> Vec<ChildContainerRef> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 depth += 1;
-                if e.name().as_ref() == b"ChildObjectContainers" {
+                if e.name().as_ref() == "ChildObjectContainers" {
                     depth_in_list = Some(depth);
-                } else if e.name().as_ref() == b"Child" && depth_in_list == Some(depth - 1) {
+                } else if e.name().as_ref() == "Child" && depth_in_list == Some(depth - 1) {
                     children.extend(child_ref_from_attributes(&e, &reader));
                 }
             }
             Ok(Event::Empty(e)) => {
-                if e.name().as_ref() == b"Child" && depth_in_list == Some(depth) {
+                if e.name().as_ref() == "Child" && depth_in_list == Some(depth) {
                     children.extend(child_ref_from_attributes(&e, &reader));
                 }
             }
             Ok(Event::End(e)) => {
-                if e.name().as_ref() == b"ChildObjectContainers" {
+                if e.name().as_ref() == "ChildObjectContainers" {
                     depth_in_list = None;
                 }
                 depth = depth.saturating_sub(1);
@@ -118,14 +118,14 @@ pub fn parse_child_object_containers(data: &[u8]) -> Vec<ChildContainerRef> {
 
 fn child_ref_from_attributes(
     element: &quick_xml::events::BytesStart,
-    reader: &Reader<&[u8]>,
+    _reader: &Reader<&[u8]>,
 ) -> Option<ChildContainerRef> {
     let attrs: Vec<(String, String)> = element
         .attributes()
         .flatten()
         .filter_map(|attr| {
-            let value = attr.decode_and_unescape_value(reader.decoder()).ok()?;
-            Some((String::from_utf8_lossy(attr.key.as_ref()).into_owned(), value.into_owned()))
+            let value = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok()?;
+            Some((attr.key.as_ref().to_owned(), value.into_owned()))
         })
         .collect();
     child_ref(|key| attrs.iter().find(|(name, _)| name == key).map(|(_, value)| value.clone()))

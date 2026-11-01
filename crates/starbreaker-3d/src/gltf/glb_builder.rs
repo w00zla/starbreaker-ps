@@ -3,6 +3,13 @@
 //! GlbBuilder is used by `write_glb` for all mesh packing, texture embedding,
 //! material creation, and NMC node hierarchy building. There is a single unified
 //! code path for all export scenarios — single entities, assembled scenes, and interiors.
+//!
+//! Per-vertex accessors live in [`VertexAccessors`], the single source of
+//! primitive attributes and morph targets for the flat and NMC paths. Rig data
+//! (`Mesh::skin`, `Mesh::morph_targets`) is packed by `pack_rig`; skins are
+//! bound per mesh node in `finalize` (`bind_skins`): joints by name, inverse
+//! binds from the node hierarchy, placeholders for missing joints and an
+//! anchor joint for vertices without influence.
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
@@ -67,14 +74,76 @@ struct BuiltMaterial {
     identity: MaterialIdentity,
 }
 
+/// Every per-vertex accessor of a packed geometry: the single source of
+/// primitive attributes and morph targets, so the flat and NMC paths emit the
+/// same attributes.
+#[derive(Clone, Default)]
+pub(crate) struct VertexAccessors {
+    pub position: u32,
+    pub uv0: Option<u32>,
+    pub uv1: Option<u32>,
+    pub normal: Option<u32>,
+    pub color: Option<u32>,
+    pub tangent: Option<u32>,
+    /// `(JOINTS_n, WEIGHTS_n)` per influence set.
+    pub skin_sets: Vec<(u32, u32)>,
+    /// `(POSITION, NORMAL)` deltas per morph target.
+    pub morph_targets: Vec<(u32, Option<u32>)>,
+    pub morph_target_names: Vec<String>,
+}
+
+impl VertexAccessors {
+    fn attributes(&self) -> BTreeMap<Checked<json::mesh::Semantic>, json::Index<json::Accessor>> {
+        use json::mesh::Semantic;
+        let mut attributes = BTreeMap::new();
+        let mut put = |semantic: Semantic, accessor: Option<u32>| {
+            if let Some(accessor) = accessor {
+                attributes.insert(Checked::Valid(semantic), json::Index::new(accessor));
+            }
+        };
+        put(Semantic::Positions, Some(self.position));
+        put(Semantic::TexCoords(0), self.uv0);
+        put(Semantic::TexCoords(1), self.uv1);
+        put(Semantic::Normals, self.normal);
+        put(Semantic::Colors(0), self.color);
+        put(Semantic::Tangents, self.tangent);
+        for (set, &(joints, weights)) in self.skin_sets.iter().enumerate() {
+            put(Semantic::Joints(set as u32), Some(joints));
+            put(Semantic::Weights(set as u32), Some(weights));
+        }
+        attributes
+    }
+
+    fn targets(&self) -> Option<Vec<json::mesh::MorphTarget>> {
+        (!self.morph_targets.is_empty()).then(|| {
+            self.morph_targets
+                .iter()
+                .map(|&(positions, normals)| json::mesh::MorphTarget {
+                    positions: Some(json::Index::new(positions)),
+                    normals: normals.map(json::Index::new),
+                    tangents: None,
+                })
+                .collect()
+        })
+    }
+
+    /// Default morph weights (all zero) for the glTF mesh.
+    fn mesh_weights(&self) -> Option<Vec<f32>> {
+        (!self.morph_targets.is_empty()).then(|| vec![0.0; self.morph_targets.len()])
+    }
+
+    /// `extras.targetNames` (the convention Blender's importer reads).
+    fn mesh_extras(&self) -> Option<Box<serde_json::value::RawValue>> {
+        if self.morph_target_names.is_empty() {
+            return None;
+        }
+        serde_json::value::to_raw_value(&serde_json::json!({ "targetNames": self.morph_target_names })).ok()
+    }
+}
+
 #[derive(Clone)]
 struct PackedGeometryInfo {
-    pos_accessor_idx: u32,
-    uv_accessor_idx: Option<u32>,
-    secondary_uv_accessor_idx: Option<u32>,
-    normal_accessor_idx: Option<u32>,
-    color_accessor_idx: Option<u32>,
-    tangent_accessor_idx: Option<u32>,
+    vertex: VertexAccessors,
     submesh_idx_accessors: Vec<u32>,
 }
 
@@ -100,6 +169,17 @@ pub(crate) struct GlbBuilder {
     pub include_vertex_colors: bool,
     /// Emit primitives of `Damage*` submaterials. See `ExportOptions::include_damage`.
     pub include_damage: bool,
+    /// Skinned geometry: POSITION accessor → the skin's joint names (bound to
+    /// nodes per mesh node in `finalize`).
+    skinned_geometry: HashMap<u32, Vec<String>>,
+    skins_json: Vec<json::Skin>,
+    /// Skeleton bone node → (the node the skeleton hangs under, the bone's
+    /// bind-pose world in that node's space). Skins bind to this, not to the
+    /// (possibly posed) node hierarchy.
+    bone_bind: HashMap<u32, (u32, glam::Mat4)>,
+    /// glTF mesh index → its morph target names (for weight animation).
+    pub(super) morph_names: HashMap<u32, Vec<String>>,
+    pub(super) animations_json: Vec<json::Animation>,
 }
 
 /// Texture dedup cache: maps a packed texture identity to its binary-buffer region.
@@ -109,19 +189,12 @@ type TexCache = HashMap<PackedTextureKey, TextureRegion>;
 #[derive(Clone)]
 pub(crate) struct PackedMeshInfo {
     pub mesh_idx: u32,
-    pub pos_accessor_idx: u32,
-    pub uv_accessor_idx: Option<u32>,
-    pub secondary_uv_accessor_idx: Option<u32>,
-    pub normal_accessor_idx: Option<u32>,
-    pub color_accessor_idx: Option<u32>,
-    #[allow(dead_code)]
-    pub tangent_accessor_idx: Option<u32>,
+    pub vertex: VertexAccessors,
     /// Per-submesh: the deduplicated glTF material index.
     pub submesh_mat_indices: Vec<u32>,
     /// Per-submesh: the index accessor for this submesh, or None if skipped (e.g. NoDraw).
     pub submesh_idx_accessors: Vec<Option<u32>>,
 }
-
 
 /// Convert a 4×4 column-major matrix to a flat [f32; 16] for glTF.
 pub(crate) fn flatten_4x4(m: &[[f32; 4]; 4]) -> [f32; 16] {
@@ -132,7 +205,10 @@ pub(crate) fn flatten_4x4(m: &[[f32; 4]; 4]) -> [f32; 16] {
 }
 
 /// Build a glTF 4x4 column-major matrix from an item port offset (position + Euler degrees).
-pub(crate) fn offset_to_gltf_matrix(position: [f32; 3], rotation_deg: [f32; 3]) -> Option<[f32; 16]> {
+pub(crate) fn offset_to_gltf_matrix(
+    position: [f32; 3],
+    rotation_deg: [f32; 3],
+) -> Option<[f32; 16]> {
     let has_pos = position[0] != 0.0 || position[1] != 0.0 || position[2] != 0.0;
     let has_rot = rotation_deg[0] != 0.0 || rotation_deg[1] != 0.0 || rotation_deg[2] != 0.0;
     if !has_pos && !has_rot {
@@ -169,10 +245,33 @@ impl GlbBuilder {
             node_name_to_idx: HashMap::new(),
             include_vertex_colors: true,
             include_damage: true,
+            skinned_geometry: HashMap::new(),
+            skins_json: Vec::new(),
+            bone_bind: HashMap::new(),
+            morph_names: HashMap::new(),
+            animations_json: Vec::new(),
         }
     }
 
     fn pack_geometry(&mut self, mesh: &Mesh, include_tangents: bool) -> PackedGeometryInfo {
+        // Parity guard (docs/superpowers/plans/2026-10-14-glb-blend-parity.md): no `..` — a new Mesh field must be written
+        // here or named as a gap.
+        let Mesh {
+            positions: _,
+            indices: _,
+            uvs: _,
+            secondary_uvs: _,
+            normals: _,
+            tangents: _,
+            colors: _,
+            submeshes: _,   // primitives are emitted per submesh by the caller
+            model_min: _,   // glTF bounds are recomputed from positions
+            model_max: _,
+            scaling_min: _, // dequantization only
+            scaling_max: _,
+            skin: _,          // JOINTS_n / WEIGHTS_n + a skin bound per node in `finalize`
+            morph_targets: _, // primitive targets + extras.targetNames
+        } = mesh;
         // Ensure 4-byte alignment
         while !self.bin.len().is_multiple_of(4) {
             self.bin.push(0);
@@ -267,7 +366,11 @@ impl GlbBuilder {
                 self.bin.extend_from_slice(&i.to_le_bytes());
             }
         }
-        let idx_len = if use_u16 { mesh.indices.len() * 2 } else { mesh.indices.len() * 4 };
+        let idx_len = if use_u16 {
+            mesh.indices.len() * 2
+        } else {
+            mesh.indices.len() * 4
+        };
         let idx_component_type = if use_u16 {
             json::accessor::ComponentType::U16
         } else {
@@ -366,6 +469,14 @@ impl GlbBuilder {
             None,
         );
 
+        let (skin_sets, morph_targets) = self.pack_rig(mesh);
+        if mesh.skin.is_some() {
+            self.skinned_geometry.insert(
+                pos_accessor_idx,
+                mesh.skin.as_ref().map(|s| s.joint_names.clone()).unwrap_or_default(),
+            );
+        }
+
         // Index buffer view
         let idx_bv_idx = self.buffer_views.len() as u32;
         self.buffer_views.push(json::buffer::View {
@@ -391,7 +502,9 @@ impl GlbBuilder {
                 buffer_view: Some(json::Index::new(idx_bv_idx)),
                 byte_offset: Some(json::validation::USize64(idx_byte_offset)),
                 count: json::validation::USize64(sub.num_indices as u64),
-                component_type: Checked::Valid(json::accessor::GenericComponentType(idx_component_type)),
+                component_type: Checked::Valid(json::accessor::GenericComponentType(
+                    idx_component_type,
+                )),
                 type_: Checked::Valid(json::accessor::Type::Scalar),
                 min: None,
                 max: None,
@@ -405,14 +518,223 @@ impl GlbBuilder {
         }
 
         PackedGeometryInfo {
-            pos_accessor_idx,
-            uv_accessor_idx,
-            secondary_uv_accessor_idx,
-            normal_accessor_idx,
-            color_accessor_idx,
-            tangent_accessor_idx,
+            vertex: VertexAccessors {
+                position: pos_accessor_idx,
+                uv0: uv_accessor_idx,
+                uv1: secondary_uv_accessor_idx,
+                normal: normal_accessor_idx,
+                color: color_accessor_idx,
+                tangent: tangent_accessor_idx,
+                skin_sets,
+                morph_targets,
+                morph_target_names: mesh.morph_targets.iter().map(|t| t.name.clone()).collect(),
+            },
             submesh_idx_accessors,
         }
+    }
+
+    /// Append bytes at a 4-byte boundary and return their offset.
+    pub(super) fn push_aligned(&mut self, bytes: &[u8]) -> usize {
+        while !self.bin.len().is_multiple_of(4) {
+            self.bin.push(0);
+        }
+        let offset = self.bin.len();
+        self.bin.extend_from_slice(bytes);
+        offset
+    }
+
+    /// One accessor over `count` elements at `offset` in its own view.
+    pub(super) fn push_accessor(
+        &mut self,
+        offset: usize,
+        byte_length: usize,
+        count: usize,
+        component: json::accessor::ComponentType,
+        type_: json::accessor::Type,
+        target: Option<json::buffer::Target>,
+        min_max: Option<([f32; 3], [f32; 3])>,
+    ) -> u32 {
+        let view = self.buffer_views.len() as u32;
+        self.buffer_views.push(json::buffer::View {
+            buffer: json::Index::new(0),
+            byte_offset: Some(json::validation::USize64(offset as u64)),
+            byte_length: json::validation::USize64(byte_length as u64),
+            byte_stride: None,
+            target: target.map(Checked::Valid),
+            name: None,
+            extensions: None,
+            extras: Default::default(),
+        });
+        let accessor = self.accessors.len() as u32;
+        let to_json = |v: [f32; 3]| serde_json::Value::Array(v.iter().map(|&x| serde_json::Value::from(x)).collect());
+        self.accessors.push(json::Accessor {
+            buffer_view: Some(json::Index::new(view)),
+            byte_offset: Some(json::validation::USize64(0)),
+            count: json::validation::USize64(count as u64),
+            component_type: Checked::Valid(json::accessor::GenericComponentType(component)),
+            type_: Checked::Valid(type_),
+            min: min_max.map(|(min, _)| to_json(min)),
+            max: min_max.map(|(_, max)| to_json(max)),
+            name: None,
+            normalized: false,
+            sparse: None,
+            extensions: None,
+            extras: Default::default(),
+        });
+        accessor
+    }
+
+    /// Skin sets (`JOINTS_n` / `WEIGHTS_n`, strongest influences first; a
+    /// vertex without influence binds to the anchor joint, index
+    /// `joint_names.len()`) and morph-target accessors.
+    fn pack_rig(&mut self, mesh: &Mesh) -> (Vec<(u32, u32)>, Vec<(u32, Option<u32>)>) {
+        use json::accessor::{ComponentType, Type};
+        use json::buffer::Target;
+        let count = mesh.positions.len();
+        let mut skin_sets = Vec::new();
+        if let Some(skin) = mesh.skin.as_ref().filter(|_| count > 0) {
+            let anchor = skin.joint_names.len() as u16;
+            let sorted: Vec<Vec<(u16, f32)>> = skin
+                .joints
+                .iter()
+                .zip(&skin.weights)
+                .map(|(joints, weights)| {
+                    let mut influences: Vec<(u16, f32)> = joints
+                        .iter()
+                        .zip(weights)
+                        .filter(|(_, w)| **w > 0.0)
+                        .map(|(&j, &w)| (j, w))
+                        .collect();
+                    influences.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    if influences.is_empty() {
+                        influences.push((anchor, 1.0));
+                    }
+                    influences
+                })
+                .collect();
+            let sets = sorted.iter().map(Vec::len).max().unwrap_or(1).div_ceil(4);
+            for set in 0..sets {
+                let slot = |v: &Vec<(u16, f32)>, k: usize| v.get(set * 4 + k).copied().unwrap_or((0, 0.0));
+                let joints: Vec<u8> = sorted.iter().flat_map(|v| (0..4).flat_map(move |k| slot(v, k).0.to_le_bytes())).collect();
+                let weights: Vec<u8> = sorted.iter().flat_map(|v| (0..4).flat_map(move |k| slot(v, k).1.to_le_bytes())).collect();
+                let j_off = self.push_aligned(&joints);
+                let j_acc = self.push_accessor(j_off, joints.len(), count, ComponentType::U16, Type::Vec4, Some(Target::ArrayBuffer), None);
+                let w_off = self.push_aligned(&weights);
+                let w_acc = self.push_accessor(w_off, weights.len(), count, ComponentType::F32, Type::Vec4, Some(Target::ArrayBuffer), None);
+                skin_sets.push((j_acc, w_acc));
+            }
+        }
+        let mut morph_targets = Vec::new();
+        for target in mesh.morph_targets.iter().filter(|_| count > 0) {
+            let mut vec3 = |data: &[[f32; 3]], bounds: bool| {
+                let bytes: Vec<u8> = data.iter().flatten().flat_map(|x| x.to_le_bytes()).collect();
+                let min_max = bounds.then(|| {
+                    let mut min = [f32::MAX; 3];
+                    let mut max = [f32::MIN; 3];
+                    for d in data {
+                        for axis in 0..3 {
+                            min[axis] = min[axis].min(d[axis]);
+                            max[axis] = max[axis].max(d[axis]);
+                        }
+                    }
+                    (min, max)
+                });
+                let offset = self.push_aligned(&bytes);
+                self.push_accessor(offset, bytes.len(), data.len(), ComponentType::F32, Type::Vec3, Some(Target::ArrayBuffer), min_max)
+            };
+            // glTF requires min/max on (morph) POSITION accessors.
+            let positions = vec3(&target.position_deltas, true);
+            let normals = target.normal_deltas.as_ref().map(|n| vec3(n, false));
+            morph_targets.push((positions, normals));
+        }
+        (skin_sets, morph_targets)
+    }
+
+    /// Bind each node that renders skinned geometry to a glTF skin: joints are
+    /// the skeleton nodes matched by name; a joint without a node gets an
+    /// identity placeholder under the mesh node, and the anchor joint (for
+    /// vertices without influence) is one too, so both keep their bind pose.
+    /// Inverse binds map the mesh's bind space into each joint:
+    /// `inverse(jointBindWorld) * meshNodeWorld`, where a skeleton bone's bind
+    /// world is its `bind_world_*` under the skeleton's attach node (a posed
+    /// skeleton then deforms the mesh).
+    fn bind_skins(&mut self) {
+        if self.skinned_geometry.is_empty() {
+            return;
+        }
+        for node_idx in 0..self.nodes_json.len() {
+            let Some(mesh) = self.nodes_json[node_idx].mesh else { continue };
+            let position = self.meshes_json[mesh.value()]
+                .primitives
+                .first()
+                .and_then(|p| p.attributes.get(&Checked::Valid(json::mesh::Semantic::Positions)))
+                .map(|accessor| accessor.value() as u32);
+            let Some(names) = position.and_then(|p| self.skinned_geometry.get(&p)).cloned() else { continue };
+
+            let mut joints: Vec<u32> = Vec::with_capacity(names.len() + 1);
+            for name in &names {
+                let resolved = self
+                    .node_name_to_idx
+                    .get(&name.to_lowercase())
+                    .copied()
+                    .filter(|&j| j as usize != node_idx && !joints.contains(&j));
+                let joint = match resolved {
+                    Some(joint) => joint,
+                    None => {
+                        log::warn!("skin joint '{name}' has no node; it keeps its bind pose at the mesh node");
+                        self.push_child_node(node_idx, name.clone())
+                    }
+                };
+                joints.push(joint);
+            }
+            let node_name = self.nodes_json[node_idx].name.clone().unwrap_or_else(|| format!("node_{node_idx}"));
+            joints.push(self.push_child_node(node_idx, format!("{node_name}_skin_anchor")));
+
+            let mesh_world = glam::Mat4::from_cols_array(&self.compute_node_world_matrix(node_idx));
+            let ibm_bytes: Vec<u8> = joints
+                .iter()
+                .flat_map(|&j| {
+                    // A skeleton bone binds at its bind pose under its attach
+                    // node; placeholders and the anchor at their node.
+                    let joint_bind = match self.bone_bind.get(&j) {
+                        Some(&(attach, bind)) => {
+                            glam::Mat4::from_cols_array(&self.compute_node_world_matrix(attach as usize)) * bind
+                        }
+                        None => glam::Mat4::from_cols_array(&self.compute_node_world_matrix(j as usize)),
+                    };
+                    (joint_bind.inverse() * mesh_world).to_cols_array()
+                })
+                .flat_map(|x| x.to_le_bytes())
+                .collect();
+            let offset = self.push_aligned(&ibm_bytes);
+            let ibm = self.push_accessor(
+                offset,
+                ibm_bytes.len(),
+                joints.len(),
+                json::accessor::ComponentType::F32,
+                json::accessor::Type::Mat4,
+                None,
+                None,
+            );
+            let skin_idx = self.skins_json.len() as u32;
+            self.skins_json.push(json::Skin {
+                name: Some(format!("{node_name}_skin")),
+                inverse_bind_matrices: Some(json::Index::new(ibm)),
+                joints: joints.into_iter().map(json::Index::new).collect(),
+                skeleton: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            self.nodes_json[node_idx].skin = Some(json::Index::new(skin_idx));
+        }
+    }
+
+    /// A new identity node named `name` under `parent`.
+    fn push_child_node(&mut self, parent: usize, name: String) -> u32 {
+        let idx = self.nodes_json.len() as u32;
+        self.nodes_json.push(json::Node { name: Some(name), ..Default::default() });
+        self.append_child_to_node(parent as u32, idx);
+        idx
     }
 
     /// Compute a node's world-space transform by walking up the parent chain.
@@ -433,7 +755,9 @@ impl GlbBuilder {
         }
 
         // Accumulate world transform by multiplying matrices up the chain
-        let identity = [1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0];
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
 
         fn mat4_mul(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
             let mut r = [0.0f32; 16];
@@ -504,54 +828,57 @@ impl GlbBuilder {
         bones: &[crate::skeleton::Bone],
         scene_nodes: &[json::Index<json::Node>],
     ) {
-        for bone in bones {
+        let Some(attach) = scene_nodes.first().map(|n| n.value() as u32) else {
+            return;
+        };
+        let quat = |q: [f32; 4]| glam::Quat::from_xyzw(q[1], q[2], q[3], q[0]); // stored [w, x, y, z]
+        let matrix = |q: [f32; 4], t: [f32; 3]| glam::Mat4::from_rotation_translation(quat(q), glam::Vec3::from(t));
+        let gltf_matrix = |m: glam::Mat4| {
+            let cols = m.to_cols_array();
+            let rows: [[f32; 4]; 3] = [
+                [cols[0], cols[4], cols[8], cols[12]],
+                [cols[1], cols[5], cols[9], cols[13]],
+                [cols[2], cols[6], cols[10], cols[14]],
+            ];
+            if super::is_identity_or_zero(&rows) { None } else { Some(super::mat3x4_to_gltf(&rows)) }
+        };
+
+        // Bone index → the node we created for it (bones already registered by
+        // name, e.g. as NMC nodes, are skipped and get none).
+        let mut created: Vec<Option<u32>> = vec![None; bones.len()];
+        for (index, bone) in bones.iter().enumerate() {
             if bone.name.is_empty() {
                 continue;
             }
             let lower_name = bone.name.to_lowercase();
             // Skip bones whose names are already registered (e.g. by an NMC
-            // node). Otherwise we would emit a duplicate flat node that
-            // shadows the NMC node when child entities resolve their
-            // ``parent_node_name`` via ``node_name_to_idx``.
+            // node). Otherwise we would emit a duplicate node that shadows the
+            // NMC node when child entities resolve their ``parent_node_name``
+            // via ``node_name_to_idx``.
             if self.node_name_to_idx.contains_key(&lower_name) {
                 continue;
             }
-
-            let bone_node_idx = self.nodes_json.len() as u32;
-
-            // Convert quaternion [w,x,y,z] + translation to 3x4 matrix.
-            let [qw, qx, qy, qz] = bone.world_rotation;
-            let rot = glam::Quat::from_xyzw(qx, qy, qz, qw);
-            let trans = glam::Vec3::from(bone.world_position);
-            let m = glam::Mat4::from_rotation_translation(rot, trans);
-            let cols = m.to_cols_array();
-
-            // Convert to our 3x4 row-major format for mat3x4_to_gltf
-            let bone_matrix: [[f32; 4]; 3] = [
-                [cols[0], cols[4], cols[8],  cols[12]],
-                [cols[1], cols[5], cols[9],  cols[13]],
-                [cols[2], cols[6], cols[10], cols[14]],
-            ];
-
-            let matrix = if super::is_identity_or_zero(&bone_matrix) {
-                None
-            } else {
-                Some(super::mat3x4_to_gltf(&bone_matrix))
+            let node_idx = self.nodes_json.len() as u32;
+            self.nodes_json.push(json::Node { name: Some(bone.name.clone()), ..Default::default() });
+            self.node_name_to_idx.insert(lower_name, node_idx);
+            self.bone_bind.insert(node_idx, (attach, matrix(bone.bind_world_rotation, bone.bind_world_position)));
+            created[index] = Some(node_idx);
+        }
+        // Joint hierarchy: a bone whose parent bone we created hangs under it
+        // with its local (possibly posed) transform; any other bone hangs
+        // under the attach node with its world transform.
+        for (index, bone) in bones.iter().enumerate() {
+            let Some(node_idx) = created[index] else { continue };
+            let parent_node = bone
+                .parent_index
+                .and_then(|p| created.get(p as usize).copied().flatten())
+                .filter(|&p| p != node_idx);
+            let (parent, local) = match parent_node {
+                Some(parent) => (parent, matrix(bone.local_rotation, bone.local_position)),
+                None => (attach, matrix(bone.world_rotation, bone.world_position)),
             };
-
-            self.nodes_json.push(json::Node {
-                name: Some(bone.name.clone()),
-                matrix,
-                ..Default::default()
-            });
-
-            self.node_name_to_idx.insert(lower_name, bone_node_idx);
-
-            // Attach bone node to the first scene root node
-            if let Some(root_node) = scene_nodes.first() {
-                let root_idx = root_node.value() as u32;
-                self.append_child_to_node(root_idx, bone_node_idx);
-            }
+            self.nodes_json[node_idx as usize].matrix = gltf_matrix(local);
+            self.append_child_to_node(parent, node_idx);
         }
     }
 
@@ -573,8 +900,12 @@ impl GlbBuilder {
                 "  glb '{}': parent_node='{}' offset pos=[{:.2},{:.2},{:.2}] rot=[{:.1},{:.1},{:.1}]",
                 child.entity_name,
                 child.parent_node_name,
-                child.offset_position[0], child.offset_position[1], child.offset_position[2],
-                child.offset_rotation[0], child.offset_rotation[1], child.offset_rotation[2],
+                child.offset_position[0],
+                child.offset_position[1],
+                child.offset_position[2],
+                child.offset_rotation[0],
+                child.offset_rotation[1],
+                child.offset_rotation[2],
             );
         }
         let has_mesh = !child.mesh.positions.is_empty();
@@ -620,12 +951,7 @@ impl GlbBuilder {
                 let child_root_nodes = self.build_nmc_hierarchy(
                     child_packed.as_ref().unwrap_or(&PackedMeshInfo {
                         mesh_idx: 0,
-                        pos_accessor_idx: 0,
-                        uv_accessor_idx: None,
-                        secondary_uv_accessor_idx: None,
-                        normal_accessor_idx: None,
-                        color_accessor_idx: None,
-                        tangent_accessor_idx: None,
+                        vertex: VertexAccessors::default(),
                         submesh_mat_indices: Vec::new(),
                         submesh_idx_accessors: Vec::new(),
                     }),
@@ -639,10 +965,21 @@ impl GlbBuilder {
                 for (_i, nmc_node) in child_nmc.nodes.iter().enumerate() {
                     log::debug!(
                         "  NMC node '{}' (entity '{}') type={} b2w=[{:.3},{:.3},{:.3},{:.3}][{:.3},{:.3},{:.3},{:.3}][{:.3},{:.3},{:.3},{:.3}]",
-                        nmc_node.name, child.entity_name, nmc_node.geometry_type,
-                        nmc_node.bone_to_world[0][0], nmc_node.bone_to_world[0][1], nmc_node.bone_to_world[0][2], nmc_node.bone_to_world[0][3],
-                        nmc_node.bone_to_world[1][0], nmc_node.bone_to_world[1][1], nmc_node.bone_to_world[1][2], nmc_node.bone_to_world[1][3],
-                        nmc_node.bone_to_world[2][0], nmc_node.bone_to_world[2][1], nmc_node.bone_to_world[2][2], nmc_node.bone_to_world[2][3],
+                        nmc_node.name,
+                        child.entity_name,
+                        nmc_node.geometry_type,
+                        nmc_node.bone_to_world[0][0],
+                        nmc_node.bone_to_world[0][1],
+                        nmc_node.bone_to_world[0][2],
+                        nmc_node.bone_to_world[0][3],
+                        nmc_node.bone_to_world[1][0],
+                        nmc_node.bone_to_world[1][1],
+                        nmc_node.bone_to_world[1][2],
+                        nmc_node.bone_to_world[1][3],
+                        nmc_node.bone_to_world[2][0],
+                        nmc_node.bone_to_world[2][1],
+                        nmc_node.bone_to_world[2][2],
+                        nmc_node.bone_to_world[2][3],
                     );
                 }
 
@@ -685,7 +1022,10 @@ impl GlbBuilder {
                     .map(|&i| json::Index::new(child_node_base + i))
                     .collect();
                 wrapper_children.extend(bone_node_indices);
-                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
+                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(
+                    child.offset_position,
+                    child.offset_rotation,
+                ));
                 self.nodes_json.push(json::Node {
                     name: Some(child.entity_name.clone()),
                     children: if wrapper_children.is_empty() {
@@ -706,10 +1046,15 @@ impl GlbBuilder {
                 if !self.node_name_to_idx.contains_key(&lower_name) {
                     self.node_name_to_idx.insert(lower_name, idx);
                 }
-                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
+                let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(
+                    child.offset_position,
+                    child.offset_rotation,
+                ));
                 self.nodes_json.push(json::Node {
                     name: Some(child.entity_name.clone()),
-                    mesh: child_packed.as_ref().map(|cp| json::Index::new(cp.mesh_idx)),
+                    mesh: child_packed
+                        .as_ref()
+                        .map(|cp| json::Index::new(cp.mesh_idx)),
                     matrix: offset_matrix,
                     ..Default::default()
                 });
@@ -722,10 +1067,15 @@ impl GlbBuilder {
             if !self.node_name_to_idx.contains_key(&lower_name) {
                 self.node_name_to_idx.insert(lower_name, idx);
             }
-            let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(child.offset_position, child.offset_rotation));
+            let offset_matrix = resolved_local_matrix.or(offset_to_gltf_matrix(
+                child.offset_position,
+                child.offset_rotation,
+            ));
             self.nodes_json.push(json::Node {
                 name: Some(child.entity_name.clone()),
-                mesh: child_packed.as_ref().map(|cp| json::Index::new(cp.mesh_idx)),
+                mesh: child_packed
+                    .as_ref()
+                    .map(|cp| json::Index::new(cp.mesh_idx)),
                 matrix: offset_matrix,
                 ..Default::default()
             });
@@ -735,7 +1085,8 @@ impl GlbBuilder {
         let child_node_idx = child_root_idx;
 
         // Find parent NMC node and attach. Fall back to parent entity node, then root.
-        let parent_idx = self.node_name_to_idx
+        let parent_idx = self
+            .node_name_to_idx
             .get(&child.parent_node_name.to_lowercase())
             .copied()
             .or_else(|| {
@@ -761,9 +1112,13 @@ impl GlbBuilder {
             // then apply the item port offset on top (which may include its own rotation).
             let world_translation = self.compute_node_world_translation(target_idx as usize);
             let parent_trans = glam::Mat4::from_translation(glam::Vec3::new(
-                world_translation[0], world_translation[1], world_translation[2],
+                world_translation[0],
+                world_translation[1],
+                world_translation[2],
             ));
-            let final_matrix = if let Some(offset_m) = offset_to_gltf_matrix(child.offset_position, child.offset_rotation) {
+            let final_matrix = if let Some(offset_m) =
+                offset_to_gltf_matrix(child.offset_position, child.offset_rotation)
+            {
                 let offset_mat = glam::Mat4::from_cols_array(&offset_m);
                 parent_trans * offset_mat
             } else {
@@ -794,7 +1149,11 @@ impl GlbBuilder {
         ) -> Option<crate::types::MaterialTextures>,
         load_interior_mesh: &mut dyn FnMut(
             &crate::pipeline::InteriorCgfEntry,
-        ) -> Option<(crate::types::Mesh, Option<crate::mtl::MtlFile>, Option<NodeMeshCombo>)>,
+        ) -> Option<(
+            crate::types::Mesh,
+            Option<crate::mtl::MtlFile>,
+            Option<NodeMeshCombo>,
+        )>,
     ) -> (Vec<json::Index<json::Node>>, Vec<crate::types::LightInfo>) {
         // Cache loaded meshes by CGF index (mesh data + materials from P4k).
         // Mesh loading is expensive; packing with different palettes is cheap.
@@ -820,11 +1179,10 @@ impl GlbBuilder {
 
             let mut container_children = Vec::new();
 
-            for (mesh_array_idx, transform, placement_palette) in container
-                .placements
-                .iter()
-                .map(|(i, t, p)| (*i, t, p.as_ref()))
-            {
+            for placement in &container.placements {
+                let mesh_array_idx = placement.mesh_index;
+                let transform = &placement.transform;
+                let placement_palette = placement.palette.as_ref();
                 // Per-placement palette override (loadout-attached gadgets)
                 // takes precedence over the container's palette; fall back to
                 // the container palette otherwise.
@@ -840,8 +1198,9 @@ impl GlbBuilder {
                 } else {
                     // Load mesh data (cached by CGF index).
                     if mesh_cache[mesh_array_idx].is_none() {
-                        mesh_cache[mesh_array_idx] = load_interior_mesh(&interiors.unique_cgfs[mesh_array_idx])
-                            .map(|(mesh, mtl, _nmc)| (mesh, mtl));
+                        mesh_cache[mesh_array_idx] =
+                            load_interior_mesh(&interiors.unique_cgfs[mesh_array_idx])
+                                .map(|(mesh, mtl, _nmc)| (mesh, mtl));
                     }
                     let Some((ref mesh, ref mtl)) = mesh_cache[mesh_array_idx] else {
                         packed_cache.insert(cache_key, u32::MAX);
@@ -884,9 +1243,12 @@ impl GlbBuilder {
                 self.nodes_json.push(json::Node {
                     name: Some(light.name.clone()),
                     translation: Some([pos[0] as f32, pos[1] as f32, pos[2] as f32]),
-                    rotation: Some(json::scene::UnitQuaternion(
-                        [rot[1] as f32, rot[2] as f32, rot[3] as f32, rot[0] as f32],
-                    )),
+                    rotation: Some(json::scene::UnitQuaternion([
+                        rot[1] as f32,
+                        rot[2] as f32,
+                        rot[3] as f32,
+                        rot[0] as f32,
+                    ])),
                     extensions: Some(json::extensions::scene::Node {
                         khr_lights_punctual: Some(
                             json::extensions::scene::khr_lights_punctual::KhrLightsPunctual {
@@ -953,24 +1315,45 @@ impl GlbBuilder {
         let mut occlusion_regions: Vec<Option<TextureRegion>> = Vec::new();
         if let Some(tex) = textures {
             for png_opt in &tex.diffuse {
-                texture_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+                texture_regions.push(pack_texture_deduped(
+                    png_opt.as_deref(),
+                    &mut self.bin,
+                    &mut self.tex_cache,
+                ));
             }
             for png_opt in &tex.normal {
-                normal_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+                normal_regions.push(pack_texture_deduped(
+                    png_opt.as_deref(),
+                    &mut self.bin,
+                    &mut self.tex_cache,
+                ));
             }
             for png_opt in &tex.roughness {
-                roughness_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+                roughness_regions.push(pack_texture_deduped(
+                    png_opt.as_deref(),
+                    &mut self.bin,
+                    &mut self.tex_cache,
+                ));
             }
             for png_opt in &tex.emissive {
-                emissive_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+                emissive_regions.push(pack_texture_deduped(
+                    png_opt.as_deref(),
+                    &mut self.bin,
+                    &mut self.tex_cache,
+                ));
             }
             for png_opt in &tex.occlusion {
-                occlusion_regions.push(pack_texture_deduped(png_opt.as_deref(), &mut self.bin, &mut self.tex_cache));
+                occlusion_regions.push(pack_texture_deduped(
+                    png_opt.as_deref(),
+                    &mut self.bin,
+                    &mut self.tex_cache,
+                ));
             }
         }
 
         // Texture → glTF mappings
-        let has_any_texture = texture_regions.iter()
+        let has_any_texture = texture_regions
+            .iter()
             .chain(normal_regions.iter())
             .chain(roughness_regions.iter())
             .chain(emissive_regions.iter())
@@ -988,11 +1371,41 @@ impl GlbBuilder {
             });
         }
 
-        let submaterial_texture_idx = regions_to_gltf_textures_deduped(&texture_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
-        let submaterial_normal_idx = regions_to_gltf_textures_deduped(&normal_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
-        let submaterial_roughness_idx = regions_to_gltf_textures_deduped(&roughness_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
-        let submaterial_emissive_idx = regions_to_gltf_textures_deduped(&emissive_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
-        let submaterial_occlusion_idx = regions_to_gltf_textures_deduped(&occlusion_regions, &mut self.buffer_views, &mut self.images_json, &mut self.textures_json, &mut self.tex_json_dedup);
+        let submaterial_texture_idx = regions_to_gltf_textures_deduped(
+            &texture_regions,
+            &mut self.buffer_views,
+            &mut self.images_json,
+            &mut self.textures_json,
+            &mut self.tex_json_dedup,
+        );
+        let submaterial_normal_idx = regions_to_gltf_textures_deduped(
+            &normal_regions,
+            &mut self.buffer_views,
+            &mut self.images_json,
+            &mut self.textures_json,
+            &mut self.tex_json_dedup,
+        );
+        let submaterial_roughness_idx = regions_to_gltf_textures_deduped(
+            &roughness_regions,
+            &mut self.buffer_views,
+            &mut self.images_json,
+            &mut self.textures_json,
+            &mut self.tex_json_dedup,
+        );
+        let submaterial_emissive_idx = regions_to_gltf_textures_deduped(
+            &emissive_regions,
+            &mut self.buffer_views,
+            &mut self.images_json,
+            &mut self.textures_json,
+            &mut self.tex_json_dedup,
+        );
+        let submaterial_occlusion_idx = regions_to_gltf_textures_deduped(
+            &occlusion_regions,
+            &mut self.buffer_views,
+            &mut self.images_json,
+            &mut self.textures_json,
+            &mut self.tex_json_dedup,
+        );
 
         // Build materials with dedup
         let submesh_mat_indices = build_materials(
@@ -1039,40 +1452,9 @@ impl GlbBuilder {
             let acc_idx = geometry.submesh_idx_accessors[i];
             submesh_idx_accessors.push(Some(acc_idx));
 
-            let mut attributes = BTreeMap::new();
-            attributes.insert(
-                Checked::Valid(json::mesh::Semantic::Positions),
-                json::Index::new(geometry.pos_accessor_idx),
-            );
-            if let Some(uv_idx) = geometry.uv_accessor_idx {
-                attributes.insert(
-                    Checked::Valid(json::mesh::Semantic::TexCoords(0)),
-                    json::Index::new(uv_idx),
-                );
-            }
-            if let Some(secondary_uv_idx) = geometry.secondary_uv_accessor_idx {
-                attributes.insert(
-                    Checked::Valid(json::mesh::Semantic::TexCoords(1)),
-                    json::Index::new(secondary_uv_idx),
-                );
-            }
-            if let Some(normal_idx) = geometry.normal_accessor_idx {
-                attributes.insert(
-                    Checked::Valid(json::mesh::Semantic::Normals),
-                    json::Index::new(normal_idx),
-                );
-            }
-            if let Some(color_idx) = geometry.color_accessor_idx.filter(|_| self.include_vertex_colors) {
-                attributes.insert(
-                    Checked::Valid(json::mesh::Semantic::Colors(0)),
-                    json::Index::new(color_idx),
-                );
-            }
-            if let Some(tangent_idx) = geometry.tangent_accessor_idx {
-                attributes.insert(
-                    Checked::Valid(json::mesh::Semantic::Tangents),
-                    json::Index::new(tangent_idx),
-                );
+            let mut attributes = geometry.vertex.attributes();
+            if !self.include_vertex_colors {
+                attributes.remove(&Checked::Valid(json::mesh::Semantic::Colors(0)));
             }
 
             primitives.push(json::mesh::Primitive {
@@ -1080,29 +1462,27 @@ impl GlbBuilder {
                 indices: Some(json::Index::new(acc_idx)),
                 material: Some(json::Index::new(submesh_mat_indices[i])),
                 mode: Checked::Valid(json::mesh::Mode::Triangles),
-                targets: None,
+                targets: geometry.vertex.targets(),
                 extensions: None,
                 extras: Default::default(),
             });
         }
 
         let mesh_idx = self.meshes_json.len() as u32;
+        if !geometry.vertex.morph_target_names.is_empty() {
+            self.morph_names.insert(self.meshes_json.len() as u32, geometry.vertex.morph_target_names.clone());
+        }
         self.meshes_json.push(json::Mesh {
             primitives,
-            weights: None,
+            weights: geometry.vertex.mesh_weights(),
             name: mesh_name.map(String::from),
             extensions: None,
-            extras: Default::default(),
+            extras: geometry.vertex.mesh_extras(),
         });
 
         let packed = PackedMeshInfo {
             mesh_idx,
-            pos_accessor_idx: geometry.pos_accessor_idx,
-            uv_accessor_idx: geometry.uv_accessor_idx,
-            secondary_uv_accessor_idx: geometry.secondary_uv_accessor_idx,
-            normal_accessor_idx: geometry.normal_accessor_idx,
-            color_accessor_idx: geometry.color_accessor_idx,
-            tangent_accessor_idx: geometry.tangent_accessor_idx,
+            vertex: geometry.vertex.clone(),
             submesh_mat_indices,
             submesh_idx_accessors,
         };
@@ -1123,8 +1503,6 @@ impl GlbBuilder {
         has_mesh: bool,
         flat_mesh_is_fresh: bool,
     ) -> Vec<u32> {
-        use std::collections::BTreeMap;
-
         // Remove the flat mesh — we'll replace with per-NMC-node meshes.
         //
         // Only when `pack_mesh` actually appended one. On a scene-mesh cache
@@ -1147,7 +1525,9 @@ impl GlbBuilder {
         }
         log::debug!(
             "  NMC hierarchy: {} nodes, {} submeshes, has_mesh={}, root='{}'",
-            nmc.nodes.len(), submeshes.len(), has_mesh,
+            nmc.nodes.len(),
+            submeshes.len(),
+            has_mesh,
             nmc.nodes.first().map(|n| n.name.as_str()).unwrap_or("?"),
         );
 
@@ -1155,57 +1535,37 @@ impl GlbBuilder {
         let mut node_mesh_idx: Vec<Option<u32>> = vec![None; nmc.nodes.len()];
         if has_mesh {
             for (nmc_idx, submesh_indices) in node_submeshes.iter().enumerate() {
-                if submesh_indices.is_empty() { continue; }
+                if submesh_indices.is_empty() {
+                    continue;
+                }
                 let mut primitives = Vec::new();
                 for &si in submesh_indices {
                     // Skip submeshes that were excluded during packing (e.g. NoDraw).
                     let Some(idx_acc) = packed.submesh_idx_accessors[si] else { continue };
-                    let mut attributes = BTreeMap::new();
-                    attributes.insert(
-                        Checked::Valid(json::mesh::Semantic::Positions),
-                        json::Index::new(packed.pos_accessor_idx),
-                    );
-                    if let Some(uv) = packed.uv_accessor_idx {
-                        attributes.insert(
-                            Checked::Valid(json::mesh::Semantic::TexCoords(0)),
-                            json::Index::new(uv),
-                        );
-                    }
-                    if let Some(secondary_uv) = packed.secondary_uv_accessor_idx {
-                        attributes.insert(
-                            Checked::Valid(json::mesh::Semantic::TexCoords(1)),
-                            json::Index::new(secondary_uv),
-                        );
-                    }
-                    if let Some(n) = packed.normal_accessor_idx {
-                        attributes.insert(
-                            Checked::Valid(json::mesh::Semantic::Normals),
-                            json::Index::new(n),
-                        );
-                    }
-                    if let Some(color) = packed.color_accessor_idx.filter(|_| self.include_vertex_colors) {
-                        attributes.insert(
-                            Checked::Valid(json::mesh::Semantic::Colors(0)),
-                            json::Index::new(color),
-                        );
+                    let mut attributes = packed.vertex.attributes();
+                    if !self.include_vertex_colors {
+                        attributes.remove(&Checked::Valid(json::mesh::Semantic::Colors(0)));
                     }
                     primitives.push(json::mesh::Primitive {
                         attributes,
                         indices: Some(json::Index::new(idx_acc)),
                         material: Some(json::Index::new(packed.submesh_mat_indices[si])),
                         mode: Checked::Valid(json::mesh::Mode::Triangles),
-                        targets: None,
+                        targets: packed.vertex.targets(),
                         extensions: None,
                         extras: Default::default(),
                     });
                 }
                 node_mesh_idx[nmc_idx] = Some(self.meshes_json.len() as u32);
+                if !packed.vertex.morph_target_names.is_empty() {
+                    self.morph_names.insert(self.meshes_json.len() as u32, packed.vertex.morph_target_names.clone());
+                }
                 self.meshes_json.push(json::Mesh {
                     primitives,
-                    weights: None,
+                    weights: packed.vertex.mesh_weights(),
                     name: Some(nmc.nodes[nmc_idx].name.clone()),
                     extensions: None,
-                    extras: Default::default(),
+                    extras: packed.vertex.mesh_extras(),
                 });
             }
         }
@@ -1236,13 +1596,18 @@ impl GlbBuilder {
             };
             let node_idx = self.nodes_json.len() as u32;
             if !nmc_node.name.is_empty() {
-                self.node_name_to_idx.insert(nmc_node.name.to_lowercase(), node_idx);
+                self.node_name_to_idx
+                    .insert(nmc_node.name.to_lowercase(), node_idx);
             }
             self.nodes_json.push(json::Node {
                 name: Some(nmc_node.name.clone()),
                 mesh: node_mesh_idx[i].map(json::Index::new),
                 matrix,
-                children: if child_indices.is_empty() { None } else { Some(child_indices) },
+                children: if child_indices.is_empty() {
+                    None
+                } else {
+                    Some(child_indices)
+                },
                 ..Default::default()
             });
         }
@@ -1258,16 +1623,15 @@ impl GlbBuilder {
         lights: Vec<crate::types::LightInfo>,
         metadata: &super::GlbMetadata,
     ) -> Result<Vec<u8>, Error> {
+        self.bind_skins();
+
         // Wrap all content under CryEngine Z-up → glTF Y-up rotation root.
         let coord_root_idx = self.nodes_json.len() as u32;
         self.nodes_json.push(json::Node {
             name: Some("CryEngine_Z_up".into()),
             children: Some(scene_nodes),
             matrix: Some([
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, -1.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
             ]),
             ..Default::default()
         });
@@ -1280,35 +1644,47 @@ impl GlbBuilder {
         }];
 
         let mut extensions_used = Vec::new();
-        if self
-            .materials_json
-            .iter()
-            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.transmission.as_ref()).is_some())
-        {
+        if self.materials_json.iter().any(|material| {
+            material
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.transmission.as_ref())
+                .is_some()
+        }) {
             extensions_used.push("KHR_materials_transmission".to_string());
         }
-        if self
-            .materials_json
-            .iter()
-            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.ior.as_ref()).is_some())
-        {
+        if self.materials_json.iter().any(|material| {
+            material
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.ior.as_ref())
+                .is_some()
+        }) {
             extensions_used.push("KHR_materials_ior".to_string());
         }
-        if self
-            .materials_json
-            .iter()
-            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.volume.as_ref()).is_some())
-        {
+        if self.materials_json.iter().any(|material| {
+            material
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.volume.as_ref())
+                .is_some()
+        }) {
             extensions_used.push("KHR_materials_volume".to_string());
         }
+        if self.materials_json.iter().any(|material| {
+            material
+                .extensions
+                .as_ref()
+                .and_then(|extensions| extensions.emissive_strength.as_ref())
+                .is_some()
+        }) {
+            extensions_used.push("KHR_materials_emissive_strength".to_string());
+        }
         if self
             .materials_json
             .iter()
-            .any(|material| material.extensions.as_ref().and_then(|extensions| extensions.emissive_strength.as_ref()).is_some())
+            .any(material_uses_texture_transform)
         {
-            extensions_used.push("KHR_materials_emissive_strength".to_string());
-        }
-        if self.materials_json.iter().any(material_uses_texture_transform) {
             extensions_used.push("KHR_texture_transform".to_string());
         }
 
@@ -1316,28 +1692,37 @@ impl GlbBuilder {
         use json::extensions::scene::khr_lights_punctual as klp;
         let root_extensions = if !lights.is_empty() {
             extensions_used.push("KHR_lights_punctual".to_string());
-            let gltf_lights: Vec<klp::Light> = lights.iter().map(|l| {
-                let (type_, spot) = if let (Some(inner), Some(outer)) = (l.inner_angle, l.outer_angle) {
-                    (Checked::Valid(klp::Type::Spot), Some(klp::Spot {
-                        inner_cone_angle: inner.to_radians(),
-                        outer_cone_angle: outer.to_radians(),
-                    }))
-                } else {
-                    (Checked::Valid(klp::Type::Point), None)
-                };
-                klp::Light {
-                    color: l.color,
-                    intensity: l.intensity,
-                    name: Some(l.name.clone()),
-                    range: Some(l.radius),
-                    type_,
-                    spot,
-                    extensions: None,
-                    extras: Default::default(),
-                }
-            }).collect();
+            let gltf_lights: Vec<klp::Light> = lights
+                .iter()
+                .map(|l| {
+                    let (type_, spot) =
+                        if let (Some(inner), Some(outer)) = (l.inner_angle, l.outer_angle) {
+                            (
+                                Checked::Valid(klp::Type::Spot),
+                                Some(klp::Spot {
+                                    inner_cone_angle: inner.to_radians(),
+                                    outer_cone_angle: outer.to_radians(),
+                                }),
+                            )
+                        } else {
+                            (Checked::Valid(klp::Type::Point), None)
+                        };
+                    klp::Light {
+                        color: l.color,
+                        intensity: l.intensity,
+                        name: Some(l.name.clone()),
+                        range: Some(l.radius),
+                        type_,
+                        spot,
+                        extensions: None,
+                        extras: Default::default(),
+                    }
+                })
+                .collect();
             Some(json::extensions::root::Root {
-                khr_lights_punctual: Some(json::extensions::root::KhrLightsPunctual { lights: gltf_lights }),
+                khr_lights_punctual: Some(json::extensions::root::KhrLightsPunctual {
+                    lights: gltf_lights,
+                }),
             })
         } else {
             None
@@ -1345,25 +1730,37 @@ impl GlbBuilder {
 
         let asset_extras = {
             let mut map = serde_json::Map::new();
-            map.insert("generator_version".into(), serde_json::json!(env!("CARGO_PKG_VERSION")));
+            map.insert(
+                "generator_version".into(),
+                serde_json::json!(env!("CARGO_PKG_VERSION")),
+            );
             if metadata.export_options.kind != "Decomposed" {
                 if let Ok(d) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                    map.insert("export_timestamp_unix".into(), serde_json::json!(d.as_secs()));
+                    map.insert(
+                        "export_timestamp_unix".into(),
+                        serde_json::json!(d.as_secs()),
+                    );
                 }
             }
             let eo = &metadata.export_options;
-            map.insert("export_options".into(), serde_json::json!({
-                "kind": eo.kind,
-                "material_mode": eo.material_mode,
-                "format": eo.format,
-                "lod_level": eo.lod_level,
-                "texture_mip": eo.texture_mip,
-                "include_attachments": eo.include_attachments,
-                "include_interior": eo.include_interior,
-            }));
-            Some(serde_json::value::RawValue::from_string(
-                serde_json::to_string(&serde_json::Value::Object(map))?
-            )?.into())
+            map.insert(
+                "export_options".into(),
+                serde_json::json!({
+                    "kind": eo.kind,
+                    "material_mode": eo.material_mode,
+                    "format": eo.format,
+                    "lod_level": eo.lod_level,
+                    "texture_mip": eo.texture_mip,
+                    "include_attachments": eo.include_attachments,
+                    "include_interior": eo.include_interior,
+                }),
+            );
+            Some(
+                serde_json::value::RawValue::from_string(serde_json::to_string(
+                    &serde_json::Value::Object(map),
+                )?)?
+                .into(),
+            )
         };
 
         let root = json::Root {
@@ -1388,6 +1785,8 @@ impl GlbBuilder {
             textures: self.textures_json,
             samplers: self.samplers_json,
             nodes: self.nodes_json,
+            skins: self.skins_json,
+            animations: self.animations_json,
             scenes: scenes_json,
             scene: Some(json::Index::new(0)),
             extensions_used,
@@ -1470,9 +1869,7 @@ fn raw_public_params_json(params: &[crate::mtl::PublicParam]) -> serde_json::Val
     )
 }
 
-fn palette_finish_entry_json(
-    entry: &crate::mtl::TintPaletteFinishEntry,
-) -> serde_json::Value {
+fn palette_finish_entry_json(entry: &crate::mtl::TintPaletteFinishEntry) -> serde_json::Value {
     serde_json::json!({
         "specular": entry.specular,
         "glossiness": entry.glossiness,
@@ -1499,9 +1896,7 @@ fn resolved_palette_finish_json(
     }
 }
 
-fn resolved_layer_material_json(
-    material: &crate::mtl::ResolvedLayerMaterial,
-) -> serde_json::Value {
+fn resolved_layer_material_json(material: &crate::mtl::ResolvedLayerMaterial) -> serde_json::Value {
     serde_json::json!({
         "name": material.name,
         "shader": material.shader,
@@ -1523,10 +1918,7 @@ fn hash_vec3(hasher: &mut std::hash::DefaultHasher, values: &[f32; 3]) {
     values[2].to_bits().hash(hasher);
 }
 
-fn hash_optional_vec3(
-    hasher: &mut std::hash::DefaultHasher,
-    values: Option<&[f32; 3]>,
-) {
+fn hash_optional_vec3(hasher: &mut std::hash::DefaultHasher, values: Option<&[f32; 3]>) {
     values.is_some().hash(hasher);
     if let Some(values) = values {
         hash_vec3(hasher, values);
@@ -1582,10 +1974,7 @@ fn hash_vec4(hasher: &mut std::hash::DefaultHasher, values: &[f32; 4]) {
     values[3].to_bits().hash(hasher);
 }
 
-fn hash_optional_bytes(
-    hasher: &mut std::hash::DefaultHasher,
-    bytes: Option<&[u8]>,
-) {
+fn hash_optional_bytes(hasher: &mut std::hash::DefaultHasher, bytes: Option<&[u8]>) {
     match bytes {
         Some(bytes) => {
             true.hash(hasher);
@@ -1612,9 +2001,7 @@ fn hash_optional_transform(
     }
 }
 
-fn scene_material_mode_key(
-    material_mode: crate::pipeline::MaterialMode,
-) -> SceneMaterialModeKey {
+fn scene_material_mode_key(material_mode: crate::pipeline::MaterialMode) -> SceneMaterialModeKey {
     match material_mode {
         crate::pipeline::MaterialMode::None => SceneMaterialModeKey::None,
         crate::pipeline::MaterialMode::Colors => SceneMaterialModeKey::Colors,
@@ -1627,6 +2014,54 @@ fn hash_mesh_for_reuse(mesh: &Mesh, include_tangents: bool) -> u64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::hash::DefaultHasher::new();
+
+    // Parity guard (docs/superpowers/plans/2026-10-14-glb-blend-parity.md): no `..` — every Mesh field that reaches the
+    // glTF must be part of the reuse key.
+    let Mesh {
+        positions: _,
+        indices: _,
+        uvs: _,
+        secondary_uvs: _,
+        normals: _,
+        tangents: _,
+        colors: _,
+        submeshes: _,
+        model_min: _,   // not written (bounds recomputed from positions)
+        model_max: _,
+        scaling_min: _, // dequantization only
+        scaling_max: _,
+        skin,
+        morph_targets,
+    } = mesh;
+    match skin {
+        Some(skin) => {
+            true.hash(&mut hasher);
+            skin.joint_names.hash(&mut hasher);
+            skin.joints.hash(&mut hasher);
+            for weights in &skin.weights {
+                for w in weights {
+                    w.to_bits().hash(&mut hasher);
+                }
+            }
+        }
+        None => false.hash(&mut hasher),
+    }
+    morph_targets.len().hash(&mut hasher);
+    for target in morph_targets {
+        target.name.hash(&mut hasher);
+        for d in &target.position_deltas {
+            hash_vec3(&mut hasher, d);
+        }
+        match &target.normal_deltas {
+            Some(normals) => {
+                true.hash(&mut hasher);
+                for d in normals {
+                    hash_vec3(&mut hasher, d);
+                }
+            }
+            None => false.hash(&mut hasher),
+        }
+    }
 
     mesh.positions.len().hash(&mut hasher);
     for position in &mesh.positions {
@@ -1696,13 +2131,26 @@ fn hash_mesh_for_reuse(mesh: &Mesh, include_tangents: bool) -> u64 {
 
     mesh.submeshes.len().hash(&mut hasher);
     for submesh in &mesh.submeshes {
-        submesh.material_name.hash(&mut hasher);
-        submesh.material_id.hash(&mut hasher);
-        submesh.first_index.hash(&mut hasher);
-        submesh.num_indices.hash(&mut hasher);
-        submesh.first_vertex.hash(&mut hasher);
-        submesh.num_vertices.hash(&mut hasher);
-        submesh.node_parent_index.hash(&mut hasher);
+        // Parity guard: no `..` — every SubMesh field that reaches the glTF
+        // must be part of the reuse key.
+        let SubMesh {
+            material_name,
+            material_id,
+            source_material_id,
+            first_index,
+            num_indices,
+            first_vertex,
+            num_vertices,
+            node_parent_index,
+        } = submesh;
+        material_name.hash(&mut hasher);
+        material_id.hash(&mut hasher);
+        source_material_id.hash(&mut hasher);
+        first_index.hash(&mut hasher);
+        num_indices.hash(&mut hasher);
+        first_vertex.hash(&mut hasher);
+        num_vertices.hash(&mut hasher);
+        node_parent_index.hash(&mut hasher);
     }
 
     hasher.finish()
@@ -1960,7 +2408,9 @@ fn strip_null_texture_transform_texcoords(value: &mut serde_json::Value) {
     fn recurse(value: &mut serde_json::Value, in_texture_transform: bool) {
         match value {
             serde_json::Value::Object(map) => {
-                if in_texture_transform && matches!(map.get("texCoord"), Some(serde_json::Value::Null)) {
+                if in_texture_transform
+                    && matches!(map.get("texCoord"), Some(serde_json::Value::Null))
+                {
                     map.remove("texCoord");
                 }
                 for (key, child) in map.iter_mut() {
@@ -1989,42 +2439,45 @@ fn regions_to_gltf_textures_deduped(
     textures_json: &mut Vec<json::Texture>,
     dedup: &mut HashMap<TextureRegion, u32>,
 ) -> Vec<Option<u32>> {
-    regions.iter().map(|region| {
-        let region = *region.as_ref()?;
-        if let Some(&idx) = dedup.get(&region) {
-            return Some(idx);
-        }
-        let bv_idx = buffer_views.len() as u32;
-        buffer_views.push(json::buffer::View {
-            buffer: json::Index::new(0),
-            byte_offset: Some(json::validation::USize64(region.offset as u64)),
-            byte_length: json::validation::USize64(region.len as u64),
-            byte_stride: None,
-            target: None,
-            name: None,
-            extensions: None,
-            extras: Default::default(),
-        });
-        let image_idx = images_json.len() as u32;
-        images_json.push(json::Image {
-            buffer_view: Some(json::Index::new(bv_idx)),
-            mime_type: Some(json::image::MimeType("image/png".to_string())),
-            name: None,
-            uri: None,
-            extensions: None,
-            extras: Default::default(),
-        });
-        let tex_idx = textures_json.len() as u32;
-        textures_json.push(json::Texture {
-            name: None,
-            sampler: Some(json::Index::new(0)),
-            source: json::Index::new(image_idx),
-            extensions: None,
-            extras: Default::default(),
-        });
-        dedup.insert(region, tex_idx);
-        Some(tex_idx)
-    }).collect()
+    regions
+        .iter()
+        .map(|region| {
+            let region = *region.as_ref()?;
+            if let Some(&idx) = dedup.get(&region) {
+                return Some(idx);
+            }
+            let bv_idx = buffer_views.len() as u32;
+            buffer_views.push(json::buffer::View {
+                buffer: json::Index::new(0),
+                byte_offset: Some(json::validation::USize64(region.offset as u64)),
+                byte_length: json::validation::USize64(region.len as u64),
+                byte_stride: None,
+                target: None,
+                name: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            let image_idx = images_json.len() as u32;
+            images_json.push(json::Image {
+                buffer_view: Some(json::Index::new(bv_idx)),
+                mime_type: Some(json::image::MimeType("image/png".to_string())),
+                name: None,
+                uri: None,
+                extensions: None,
+                extras: Default::default(),
+            });
+            let tex_idx = textures_json.len() as u32;
+            textures_json.push(json::Texture {
+                name: None,
+                sampler: Some(json::Index::new(0)),
+                source: json::Index::new(image_idx),
+                extensions: None,
+                extras: Default::default(),
+            });
+            dedup.insert(region, tex_idx);
+            Some(tex_idx)
+        })
+        .collect()
 }
 
 fn texture_transform_parts(
@@ -2034,8 +2487,8 @@ fn texture_transform_parts(
         return (0, None);
     };
 
-    let needs_transform = (transform.scale[0] - 1.0).abs() > 1e-4
-        || (transform.scale[1] - 1.0).abs() > 1e-4;
+    let needs_transform =
+        (transform.scale[0] - 1.0).abs() > 1e-4 || (transform.scale[1] - 1.0).abs() > 1e-4;
     let tex_coord = transform.tex_coord;
     if !needs_transform {
         return (tex_coord, None);
@@ -2154,30 +2607,48 @@ fn build_materials(
     experimental_textures: bool,
     preserve_textureless_decal_primitives: bool,
 ) -> Vec<u32> {
-    submeshes.iter().map(|sub| {
-        let BuiltMaterial { material, identity } = build_material(
-            sub,
-            materials,
-            palette,
-            host_channel,
-            textures,
-            submaterial_texture_idx,
-            submaterial_normal_idx,
-            submaterial_roughness_idx,
-            submaterial_emissive_idx,
-            submaterial_occlusion_idx,
-            experimental_textures,
-            preserve_textureless_decal_primitives,
-        );
-        if let Some(&idx) = mat_dedup.get(&identity) {
-            idx
-        } else {
-            let idx = materials_json.len() as u32;
-            materials_json.push(material);
-            mat_dedup.insert(identity, idx);
-            idx
-        }
-    }).collect()
+    submeshes
+        .iter()
+        .map(|sub| {
+            let BuiltMaterial { material, identity } = build_material(
+                sub,
+                materials,
+                palette,
+                host_channel,
+                textures,
+                submaterial_texture_idx,
+                submaterial_normal_idx,
+                submaterial_roughness_idx,
+                submaterial_emissive_idx,
+                submaterial_occlusion_idx,
+                experimental_textures,
+                preserve_textureless_decal_primitives,
+            );
+            if let Some(&idx) = mat_dedup.get(&identity) {
+                idx
+            } else {
+                let idx = materials_json.len() as u32;
+                materials_json.push(material);
+                mat_dedup.insert(identity, idx);
+                idx
+            }
+        })
+        .collect()
+}
+
+fn material_metallic_factor(material: &crate::mtl::SubMaterial) -> f32 {
+    material
+        .layers
+        .iter()
+        .fold(material.metallic(), |metallic, layer| {
+            metallic.max(
+                layer
+                    .snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.metallic)
+                    .unwrap_or(0.0),
+            )
+        })
 }
 
 /// Submaterials named `Damage*` (`Damage_Internal_Structure`, ...) only show
@@ -2222,71 +2693,70 @@ fn build_material(
         }
     };
 
-    let (base_color_factor, alpha_mode, alpha_cutoff_value, double_sided, mat_name) = if let Some(m) = mtl_sub {
-        let ac = m.alpha_config();
-        let alpha = m.opacity;
-        let (gltf_alpha_mode, cutoff) = match ac {
-            crate::mtl::AlphaConfig::Opaque => (
+    let (base_color_factor, alpha_mode, alpha_cutoff_value, double_sided, mat_name) =
+        if let Some(m) = mtl_sub {
+            let ac = m.alpha_config();
+            let alpha = m.opacity;
+            let (gltf_alpha_mode, cutoff) = match ac {
+                crate::mtl::AlphaConfig::Opaque => (json::material::AlphaMode::Opaque, None),
+                crate::mtl::AlphaConfig::Blend => (json::material::AlphaMode::Blend, None),
+                crate::mtl::AlphaConfig::Mask(v) => (json::material::AlphaMode::Mask, Some(v)),
+            };
+            let base_name = if m.name.is_empty() {
+                sub.material_name.clone().unwrap_or_default()
+            } else {
+                m.name.clone()
+            };
+            // CGF-Converter compatible naming: {mtl_stem}_mtl_{material_name}_0{material_id}
+            let name = {
+                let mtl_stem = materials.and_then(|mtl| {
+                    mtl.source_path.as_ref().and_then(|p| {
+                        let file = p.rsplit(['\\', '/']).next()?;
+                        Some(file.strip_suffix(".mtl").unwrap_or(file).to_string())
+                    })
+                });
+                if let Some(stem) = mtl_stem {
+                    Some(format!("{stem}_mtl_{base_name}_0{}", sub.material_id))
+                } else if base_name.is_empty() {
+                    None
+                } else {
+                    Some(base_name)
+                }
+            };
+            let palette_color = palette.and_then(|p| match m.palette_tint {
+                1 => Some(p.primary),
+                2 => Some(p.secondary),
+                3 => Some(p.tertiary),
+                _ if m.is_glass() => Some(p.glass),
+                _ => None,
+            });
+            let layer_color = m
+                .layers
+                .first()
+                .map(|l| l.tint_color)
+                .filter(|t| *t != [1.0, 1.0, 1.0]);
+            let color = palette_color
+                .or(m.metal_base_color())
+                .or(layer_color)
+                .unwrap_or(m.diffuse);
+            (
+                [color[0], color[1], color[2], alpha],
+                gltf_alpha_mode,
+                cutoff,
+                m.is_double_sided(),
+                name,
+            )
+        } else {
+            // No submaterial: a default material, named per material id so each
+            // id keeps its own material (the `.blend` writer's one slot per id).
+            (
+                [0.8, 0.8, 0.8, 1.0],
                 json::material::AlphaMode::Opaque,
                 None,
-            ),
-            crate::mtl::AlphaConfig::Blend => (
-                json::material::AlphaMode::Blend,
-                None,
-            ),
-            crate::mtl::AlphaConfig::Mask(v) => (
-                json::material::AlphaMode::Mask,
-                Some(v),
-            ),
+                false,
+                Some(sub.material_name.clone().unwrap_or_else(|| format!("material_{:02}", sub.material_id))),
+            )
         };
-        let base_name = if m.name.is_empty() {
-            sub.material_name.clone().unwrap_or_default()
-        } else {
-            m.name.clone()
-        };
-        // CGF-Converter compatible naming: {mtl_stem}_mtl_{material_name}_0{material_id}
-        let name = {
-            let mtl_stem = materials.and_then(|mtl| {
-                mtl.source_path.as_ref().and_then(|p| {
-                    let file = p.rsplit(['\\', '/']).next()?;
-                    Some(file.strip_suffix(".mtl").unwrap_or(file).to_string())
-                })
-            });
-            if let Some(stem) = mtl_stem {
-                Some(format!("{stem}_mtl_{base_name}_0{}", sub.material_id))
-            } else if base_name.is_empty() {
-                None
-            } else {
-                Some(base_name)
-            }
-        };
-        let palette_color = palette.and_then(|p| match m.palette_tint {
-            1 => Some(p.primary),
-            2 => Some(p.secondary),
-            3 => Some(p.tertiary),
-            _ if m.is_glass() => Some(p.glass),
-            _ => None,
-        });
-        let layer_color = m.layers.first()
-            .map(|l| l.tint_color)
-            .filter(|t| *t != [1.0, 1.0, 1.0]);
-        let color = palette_color.or(m.metal_base_color()).or(layer_color).unwrap_or(m.diffuse);
-        (
-            [color[0], color[1], color[2], alpha],
-            gltf_alpha_mode,
-            cutoff,
-            m.is_double_sided(),
-            name,
-        )
-    } else {
-        (
-            [0.8, 0.8, 0.8, 1.0],
-            json::material::AlphaMode::Opaque,
-            None,
-            false,
-            sub.material_name.clone(),
-        )
-    };
 
     let alpha_cutoff = alpha_cutoff_value.map(json::material::AlphaCutoff);
 
@@ -2311,17 +2781,23 @@ fn build_material(
         .unwrap_or_default();
 
     let base_color_texture_idx = submaterial_texture_idx
-        .get(sub.material_id as usize).copied().flatten();
-    let base_color_texture = base_color_texture_idx
-        .map(|tex_idx| build_texture_info(tex_idx, diffuse_transform));
+        .get(sub.material_id as usize)
+        .copied()
+        .flatten();
+    let base_color_texture =
+        base_color_texture_idx.map(|tex_idx| build_texture_info(tex_idx, diffuse_transform));
     // Only apply per-pixel normal/roughness when the material has a direct TexSlot1 diffuse.
     // When textures come from MatLayer .mtl files (HardSurface/LayerBlend shaders), they are
     // tileable detail patterns for one layer of CryEngine's multi-layer blending system.
     // Applied standalone in glTF, the roughness variation creates extreme specular noise
     // and the normals add unwanted surface perturbation. Use scalar values instead.
-    let allow_detail_textures = experimental_textures || mtl_sub.is_some_and(|m| m.diffuse_tex.is_some());
+    let allow_detail_textures =
+        experimental_textures || mtl_sub.is_some_and(|m| m.diffuse_tex.is_some());
     let normal_texture_idx = if allow_detail_textures {
-        submaterial_normal_idx.get(sub.material_id as usize).copied().flatten()
+        submaterial_normal_idx
+            .get(sub.material_id as usize)
+            .copied()
+            .flatten()
     } else {
         None
     };
@@ -2331,7 +2807,9 @@ fn build_material(
         None
     };
 
-    let (mut roughness, mut metallic) = mtl_sub.map(|m| (m.roughness(), m.metallic())).unwrap_or((0.5, 0.0));
+    let (mut roughness, mut metallic) = mtl_sub
+        .map(|m| (m.roughness(), material_metallic_factor(m)))
+        .unwrap_or((0.5, 0.0));
     let is_glass = mtl_sub.map(|m| m.is_glass()).unwrap_or(false);
 
     // Paint takes its finish from the palette, authored as specular +
@@ -2379,7 +2857,10 @@ fn build_material(
     // dark surfaces viewed up close. Only enable with --experimental-textures.
     // Scalar roughness from MTL Shininess provides clean uniform glossiness.
     let roughness_texture_idx = if experimental_textures {
-        submaterial_roughness_idx.get(sub.material_id as usize).copied().flatten()
+        submaterial_roughness_idx
+            .get(sub.material_id as usize)
+            .copied()
+            .flatten()
     } else {
         None
     };
@@ -2388,32 +2869,39 @@ fn build_material(
     } else {
         None
     };
-    let roughness_factor = if roughness_texture.is_some() { 1.0 } else { roughness };
+    let roughness_factor = if roughness_texture.is_some() {
+        1.0
+    } else {
+        roughness
+    };
 
     let emissive_texture_idx = submaterial_emissive_idx
         .get(sub.material_id as usize)
         .copied()
         .flatten();
-    let emissive_texture = emissive_texture_idx
-        .map(|tex_idx| build_texture_info(tex_idx, emissive_transform));
+    let emissive_texture =
+        emissive_texture_idx.map(|tex_idx| build_texture_info(tex_idx, emissive_transform));
 
     let occlusion_texture_idx = submaterial_occlusion_idx
         .get(sub.material_id as usize)
         .copied()
         .flatten();
-    let occlusion_texture = occlusion_texture_idx
-        .map(|tex_idx| build_occlusion_texture(tex_idx, occlusion_transform));
+    let occlusion_texture =
+        occlusion_texture_idx.map(|tex_idx| build_occlusion_texture(tex_idx, occlusion_transform));
 
-    let mut emissive = mtl_sub.map(|m| m.emissive_factor()).unwrap_or([0.0, 0.0, 0.0]);
+    let mut emissive = mtl_sub
+        .map(|m| m.emissive_factor())
+        .unwrap_or([0.0, 0.0, 0.0]);
     if emissive_texture.is_some() && emissive == [0.0, 0.0, 0.0] {
         emissive = [1.0, 1.0, 1.0];
     }
     let emissive_strength = emissive.iter().copied().fold(0.0f32, f32::max);
-    let emissive_strength_ext = (emissive_strength > 1.0).then(|| {
-        json::extensions::material::EmissiveStrength {
-            emissive_strength: json::extensions::material::EmissiveStrengthFactor(emissive_strength),
-        }
-    });
+    let emissive_strength_ext =
+        (emissive_strength > 1.0).then(|| json::extensions::material::EmissiveStrength {
+            emissive_strength: json::extensions::material::EmissiveStrengthFactor(
+                emissive_strength,
+            ),
+        });
     if emissive_strength > 1.0 {
         emissive = [
             emissive[0] / emissive_strength,
@@ -2431,22 +2919,30 @@ fn build_material(
         .unwrap_or(1.5)
         .clamp(1.0, 2.5);
     let thickness_factor = mtl_sub
-        .and_then(|material| material.public_param_f32(&["Thickness", "GlassThickness", "RefractionDepth"]))
+        .and_then(|material| {
+            material.public_param_f32(&["Thickness", "GlassThickness", "RefractionDepth"])
+        })
         .unwrap_or(0.02)
         .max(0.0);
     let attenuation_distance = mtl_sub
-        .and_then(|material| material.public_param_f32(&["AttenuationDistance", "AbsorptionDistance"]))
+        .and_then(|material| {
+            material.public_param_f32(&["AttenuationDistance", "AbsorptionDistance"])
+        })
         .unwrap_or(0.25)
         .max(0.001);
     let attenuation_color = mtl_sub
-        .and_then(|material| material.public_param_rgb(&["AbsorptionColor", "AttenuationColor", "TintColor"]))
+        .and_then(|material| {
+            material.public_param_rgb(&["AbsorptionColor", "AttenuationColor", "TintColor"])
+        })
         .or_else(|| palette.map(|palette| palette.glass))
         .unwrap_or([1.0, 1.0, 1.0]);
 
     let mut mat_extensions = json::extensions::material::Material::default();
     if is_glass {
         mat_extensions.transmission = Some(json::extensions::material::Transmission {
-            transmission_factor: json::extensions::material::TransmissionFactor(transmission_factor),
+            transmission_factor: json::extensions::material::TransmissionFactor(
+                transmission_factor,
+            ),
             transmission_texture: None,
             extras: Default::default(),
         });
@@ -2457,7 +2953,9 @@ fn build_material(
         mat_extensions.volume = Some(json::extensions::material::Volume {
             thickness_factor: json::extensions::material::ThicknessFactor(thickness_factor),
             thickness_texture: None,
-            attenuation_distance: json::extensions::material::AttenuationDistance(attenuation_distance),
+            attenuation_distance: json::extensions::material::AttenuationDistance(
+                attenuation_distance,
+            ),
             attenuation_color: json::extensions::material::AttenuationColor(attenuation_color),
             extras: Default::default(),
         });
@@ -2504,7 +3002,10 @@ fn build_material(
                 map.insert("surface_type".into(), serde_json::json!(m.surface_type));
             }
             if !m.string_gen_mask.is_empty() {
-                map.insert("string_gen_mask".into(), serde_json::json!(m.string_gen_mask));
+                map.insert(
+                    "string_gen_mask".into(),
+                    serde_json::json!(m.string_gen_mask),
+                );
             }
             if let Some(ref tex) = m.diffuse_tex {
                 map.insert("diffuse_tex".into(), serde_json::json!(tex));
@@ -2516,22 +3017,26 @@ fn build_material(
                 map.insert("palette_tint".into(), serde_json::json!(m.palette_tint));
             }
             if !m.layers.is_empty() {
-                let layers_json: Vec<serde_json::Value> = m.layers.iter().map(|l| {
-                    let mut lm = serde_json::Map::new();
-                    if !l.path.is_empty() {
-                        lm.insert("path".into(), serde_json::json!(l.path));
-                    }
-                    if l.tint_color != [1.0, 1.0, 1.0] {
-                        lm.insert("tint_color".into(), serde_json::json!(l.tint_color));
-                    }
-                    if l.palette_tint > 0 {
-                        lm.insert("palette_tint".into(), serde_json::json!(l.palette_tint));
-                    }
-                    if (l.uv_tiling - 1.0).abs() > f32::EPSILON {
-                        lm.insert("uv_tiling".into(), serde_json::json!(l.uv_tiling));
-                    }
-                    serde_json::Value::Object(lm)
-                }).collect();
+                let layers_json: Vec<serde_json::Value> = m
+                    .layers
+                    .iter()
+                    .map(|l| {
+                        let mut lm = serde_json::Map::new();
+                        if !l.path.is_empty() {
+                            lm.insert("path".into(), serde_json::json!(l.path));
+                        }
+                        if l.tint_color != [1.0, 1.0, 1.0] {
+                            lm.insert("tint_color".into(), serde_json::json!(l.tint_color));
+                        }
+                        if l.palette_tint > 0 {
+                            lm.insert("palette_tint".into(), serde_json::json!(l.palette_tint));
+                        }
+                        if (l.uv_tiling - 1.0).abs() > f32::EPSILON {
+                            lm.insert("uv_tiling".into(), serde_json::json!(l.uv_tiling));
+                        }
+                        serde_json::Value::Object(lm)
+                    })
+                    .collect();
                 map.insert("layers".into(), serde_json::Value::Array(layers_json));
             }
 
@@ -2550,7 +3055,10 @@ fn build_material(
             } else {
                 ("active", "visible")
             };
-            semantic.insert("shader_family".into(), serde_json::json!(m.shader_family().as_str()));
+            semantic.insert(
+                "shader_family".into(),
+                serde_json::json!(m.shader_family().as_str()),
+            );
             semantic.insert("is_hidden".into(), serde_json::json!(m.should_hide()));
             semantic.insert("is_decal".into(), serde_json::json!(m.is_decal()));
             semantic.insert("is_glass".into(), serde_json::json!(m.is_glass()));
@@ -2624,7 +3132,8 @@ fn build_material(
                         let mut slot_json = serde_json::Map::new();
                         slot_json.insert("slot".into(), serde_json::json!(binding.slot));
                         slot_json.insert("path".into(), serde_json::json!(binding.path));
-                        slot_json.insert("is_virtual".into(), serde_json::json!(binding.is_virtual));
+                        slot_json
+                            .insert("is_virtual".into(), serde_json::json!(binding.is_virtual));
                         slot_json.insert("role".into(), serde_json::json!(binding.role.as_str()));
                         if !binding.authored_attributes.is_empty() {
                             slot_json.insert(
@@ -2728,7 +3237,10 @@ fn build_material(
                 palette_semantic.insert("layers".into(), serde_json::Value::Array(palette_layers));
             }
             if !palette_semantic.is_empty() {
-                semantic.insert("palette".into(), serde_json::Value::Object(palette_semantic));
+                semantic.insert(
+                    "palette".into(),
+                    serde_json::Value::Object(palette_semantic),
+                );
             }
 
             let mut material_set_identity = serde_json::Map::new();
@@ -2741,7 +3253,10 @@ fn build_material(
                     );
                 }
             }
-            material_set_identity.insert("submaterial_index".into(), serde_json::json!(sub.source_material_id.unwrap_or(sub.material_id)));
+            material_set_identity.insert(
+                "submaterial_index".into(),
+                serde_json::json!(sub.source_material_id.unwrap_or(sub.material_id)),
+            );
             if !m.name.is_empty() {
                 material_set_identity.insert("submaterial_name".into(), serde_json::json!(m.name));
             }
@@ -2779,6 +3294,7 @@ fn build_material(
                             "wear_specular_color": snapshot.wear_specular_color,
                             "wear_glossiness": snapshot.wear_glossiness,
                             "surface_type": snapshot.surface_type,
+                            "metallic": snapshot.metallic,
                         }));
                         let resolved_material = layer
                             .resolved_material
@@ -2903,12 +3419,17 @@ mod pop_guard_tests {
     fn dummy_packed() -> PackedMeshInfo {
         PackedMeshInfo {
             mesh_idx: 0,
-            pos_accessor_idx: 0,
-            uv_accessor_idx: None,
-            secondary_uv_accessor_idx: None,
-            normal_accessor_idx: None,
-            color_accessor_idx: None,
-            tangent_accessor_idx: None,
+            vertex: VertexAccessors {
+                position: 0,
+                uv0: None,
+                uv1: None,
+                normal: None,
+                color: None,
+                tangent: None,
+                skin_sets: Vec::new(),
+                morph_targets: Vec::new(),
+                morph_target_names: Vec::new(),
+            },
             submesh_mat_indices: Vec::new(),
             submesh_idx_accessors: Vec::new(),
         }

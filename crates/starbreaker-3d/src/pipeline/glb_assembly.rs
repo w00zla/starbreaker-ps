@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use starbreaker_common::progress::{report as report_progress, Progress};
+use starbreaker_common::progress::{Progress, report as report_progress};
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_p4k::MappedP4k;
@@ -53,9 +53,12 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     use crate::types::EntityPayload;
 
+    let assembly_kind = classify_entity_kind(db, record);
+    let is_fps_weapon = assembly_kind == EntityAssemblyKind::FpsWeapon;
+
     report_progress(progress, LOADOUT_STAGE_START, "Resolving loadout");
     let phase_start = Instant::now();
-    let payload_material_mode = if opts.kind == ExportKind::Decomposed {
+    let payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
         MaterialMode::Colors
     } else {
         opts.material_mode
@@ -67,9 +70,15 @@ pub fn assemble_glb_with_loadout_with_progress(
 
     log::info!("[mem-pipeline] resolving loadout meshes...");
     let resolved = resolve_loadout_meshes(db, p4k, record, tree, &payload_opts)?;
-    log::info!("[mem-pipeline] resolved: {} children", resolved.children.len());
-    log::info!("[timing] resolve_loadout_meshes: {:.2}s", phase_start.elapsed().as_secs_f32());
-    
+    log::info!(
+        "[mem-pipeline] resolved: {} children",
+        resolved.children.len()
+    );
+    log::info!(
+        "[timing] resolve_loadout_meshes: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
+
     report_progress(progress, ROOT_EXPORT_STAGE_START, "Exporting root mesh");
     let phase_start = Instant::now();
     let localization = load_localization_map(p4k);
@@ -95,24 +104,38 @@ pub fn assemble_glb_with_loadout_with_progress(
     // handed on as the root's table, mounted items attached to its nodes
     // (magazines at magAttach) moved a second time. Baked into the vertices,
     // the mesh is whole and the root stays as the record describes it.
-    let root_mesh = match (resolved.nmc.as_ref(), payload_nmc.as_ref()) {
+    let mut root_mesh = match (resolved.nmc.as_ref(), payload_nmc.as_ref()) {
         (None, Some(nmc)) => super::bake_nmc_into_mesh(root_mesh, Some(nmc), false),
         _ => root_mesh,
     };
+    // The root's node table is the record's (fork); upstream's select_root_nmc
+    // preferred the payload's, which the bake above already applied.
+    let root_nmc = resolved.nmc.clone();
     let root_animation_controller = query_animation_controller_source(db, record);
     if let Some(palette) = root_palette.as_mut() {
         populate_palette_display_name(palette, &paint_display_names);
     }
     let default_root_palette = root_palette.clone();
-    log::info!("[mem-pipeline] root exported: {} verts", root_mesh.positions.len());
+    log::info!(
+        "[mem-pipeline] root exported: {} verts",
+        root_mesh.positions.len()
+    );
 
     // Check for equipped paint item and resolve its SubGeometry palette/material override.
     let phase_start = Instant::now();
-    let (mut root_palette, root_mtl) = resolve_paint_override(
-        db, p4k, record, &tree.root, root_palette, root_mtl,
+    let (mut root_palette, mut root_mtl) =
+        resolve_paint_override(db, p4k, record, &tree.root, root_palette, root_mtl);
+    // The paint's material set serves the mesh's slots the engine's way too.
+    if let Some(mtl) = root_mtl.as_mut() {
+        crate::material_slots::resolve_material_slots(&mut root_mesh, mtl, || {
+            crate::material_slots::load_default_material(p4k)
+        })?;
+    }
+    log::info!(
+        "[timing] resolve_paint_override: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
     );
-    log::info!("[timing] resolve_paint_override: {:.2}s", phase_start.elapsed().as_secs_f32());
-    
+
     if let Some(palette) = root_palette.as_mut() {
         populate_palette_display_name(palette, &paint_display_names);
     }
@@ -121,15 +144,19 @@ pub fn assemble_glb_with_loadout_with_progress(
     // Landing gear CDF geometry attaches to NMC helper bones (e.g. hardpoint_landing_gear_front).
     // Adding them as EntityPayloads lets the existing scene graph handle positioning.
     // Children skip textures to save memory, but never exceed the user's material mode.
-    let child_payload_material_mode = if opts.kind == ExportKind::Decomposed {
+    let child_payload_material_mode = if opts.kind == ExportKind::Decomposed && !is_fps_weapon {
         MaterialMode::Colors
     } else {
         opts.material_mode
     };
-    let child_material_mode = match opts.material_mode {
-        _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
-        MaterialMode::None => MaterialMode::None,
-        _ => MaterialMode::Colors,
+    let child_material_mode = if is_fps_weapon {
+        opts.material_mode
+    } else {
+        match opts.material_mode {
+            _ if opts.kind == ExportKind::Decomposed => MaterialMode::Colors,
+            MaterialMode::None => MaterialMode::None,
+            _ => MaterialMode::Colors,
+        }
     };
     let child_opts = ExportOptions {
         material_mode: child_material_mode,
@@ -237,7 +264,11 @@ pub fn assemble_glb_with_loadout_with_progress(
                     material_path: asset.material_path,
                     bones: asset.bones,
                     skeleton_source_path: asset.skeleton_source_path,
-                    entity_name: gear_path.rsplit('/').next().unwrap_or(gear_path).to_string(),
+                    entity_name: gear_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(gear_path)
+                        .to_string(),
                     entity_category: None,
                     attach_def_type: None,
                     parent_node_name: bone_name.clone(),
@@ -248,6 +279,7 @@ pub fn assemble_glb_with_loadout_with_progress(
                     detach_direction: [0.0; 3],
                     port_flags: String::new(),
                     docking_collar_port: None,
+                    ui_bindings: Vec::new(),
                 });
                 log::info!("  landing gear '{gear_path}' → '{bone_name}', {verts} verts");
             }
@@ -258,9 +290,34 @@ pub fn assemble_glb_with_loadout_with_progress(
             gear_cache.len(),
         );
     }
-    log::info!("[timing] load_landing_gear + flatten_tree: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing] load_landing_gear + flatten_tree: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
     let total_child_verts: usize = child_payloads.iter().map(|c| c.mesh.positions.len()).sum();
-    log::info!("[mem-pipeline] flattened: {} payloads, {} total verts", child_payloads.len(), total_child_verts);
+    log::info!(
+        "[mem-pipeline] flattened: {} payloads, {} total verts",
+        child_payloads.len(),
+        total_child_verts
+    );
+    let weapon_assembly = if is_fps_weapon {
+        let root_assembly_geometry_path =
+            resolved.geometry_path.as_deref().unwrap_or(&geometry_path);
+        Some(resolve_weapon_assembly(
+            p4k,
+            &resolved.entity_name,
+            root_assembly_geometry_path,
+            &geometry_path,
+            &material_path,
+            &root_mesh,
+            root_nmc.as_ref(),
+            &root_bones,
+            root_skeleton_source_path.as_deref(),
+            &mut child_payloads,
+        ))
+    } else {
+        None
+    };
     report_progress(progress, ASSEMBLY_STAGE_START, "Discovering interiors");
 
     // Interior discovery (no mesh loading — JIT during GLB packing).
@@ -286,7 +343,10 @@ pub fn assemble_glb_with_loadout_with_progress(
         );
         merge_interiors(&mut loaded_interiors, child_interiors);
     }
-    log::info!("[timing] load_interiors: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing] load_interiors: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
 
     log::info!(
         "Assembling: root + {} child meshes + {} interior meshes ({} unique CGFs)",
@@ -331,11 +391,15 @@ pub fn assemble_glb_with_loadout_with_progress(
             preloaded_interior_textures.len()
         );
     }
-    report_progress(progress, ASSEMBLY_STAGE_START, if opts.kind == ExportKind::Decomposed {
-        "Building structured package"
-    } else {
-        "Packing GLB"
-    });
+    report_progress(
+        progress,
+        ASSEMBLY_STAGE_START,
+        if opts.kind == ExportKind::Decomposed {
+            "Building structured package"
+        } else {
+            "Packing GLB"
+        },
+    );
     let preloaded_interior_mesh_indices: std::collections::HashMap<String, usize> =
         loaded_interiors
             .unique_cgfs
@@ -352,15 +416,17 @@ pub fn assemble_glb_with_loadout_with_progress(
             Option<&crate::mtl::MtlFile>,
             Option<&crate::mtl::TintPalette>,
         ) -> Option<MaterialTextures>,
-    > =
-        if !opts.material_mode.include_textures() {
-            Box::new(|_, _| None)
-        } else {
-            let mip = opts.texture_mip;
-            let include_normals = opts.material_mode.include_normals();
-            let experimental_textures = opts.material_mode.experimental();
-            Box::new(move |mtl: Option<&crate::mtl::MtlFile>, palette: Option<&crate::mtl::TintPalette>| {
-                if let Some(material_source) = mtl.and_then(|materials| materials.source_path.as_ref()) {
+    > = if !opts.material_mode.include_textures() {
+        Box::new(|_, _| None)
+    } else {
+        let mip = opts.texture_mip;
+        let include_normals = opts.material_mode.include_normals();
+        let experimental_textures = opts.material_mode.experimental();
+        Box::new(
+            move |mtl: Option<&crate::mtl::MtlFile>, palette: Option<&crate::mtl::TintPalette>| {
+                if let Some(material_source) =
+                    mtl.and_then(|materials| materials.source_path.as_ref())
+                {
                     let cache_key = PreloadedTextureKey {
                         material_source: material_source.to_ascii_lowercase(),
                         palette_hash: tint_palette_hash(palette),
@@ -381,41 +447,55 @@ pub fn assemble_glb_with_loadout_with_progress(
                         experimental_textures,
                     )
                 })
-            })
-        };
+            },
+        )
+    };
 
     let mut interior_png_cache = PngCache::new();
     // Bundled GLB exports preload unique interior CGFs in parallel, then fall
     // back to on-demand loading for any cache misses and for decomposed exports.
-    let mut interior_mesh_loader =
-        |entry: &crate::pipeline::InteriorCgfEntry| -> Option<(crate::Mesh, Option<mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)> {
-            if let Some(&index) = preloaded_interior_mesh_indices.get(&entry.cgf_path) {
-                if let Some(asset) = preloaded_interior_meshes
-                    .get_mut(index)
-                    .and_then(Option::take)
-                {
-                    return Some(asset);
-                }
+    let mut interior_mesh_loader = |entry: &crate::pipeline::InteriorCgfEntry| -> Option<(
+        crate::Mesh,
+        Option<mtl::MtlFile>,
+        Option<crate::nmc::NodeMeshCombo>,
+    )> {
+        if let Some(&index) = preloaded_interior_mesh_indices.get(&entry.cgf_path) {
+            if let Some(asset) = preloaded_interior_meshes
+                .get_mut(index)
+                .and_then(Option::take)
+            {
+                return Some(asset);
             }
+        }
 
-            load_interior_mesh_asset(p4k, entry, &child_opts, &mut interior_png_cache)
-        };
+        load_interior_mesh_asset(p4k, entry, &child_opts, &mut interior_png_cache)
+    };
 
     if opts.kind == ExportKind::Decomposed {
-        let mut available_palettes = query_related_tint_palettes(db, record, default_root_palette.as_ref());
+        let mut available_palettes =
+            query_related_tint_palettes(db, record, default_root_palette.as_ref());
         for palette in &mut available_palettes {
             populate_palette_display_name(palette, &paint_display_names);
         }
-        let paint_variants = enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
-        let decomposed_progress = progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
-        
+        let paint_variants =
+            enumerate_paint_variants_for_entity(db, p4k, record, &paint_display_names);
+        let decomposed_progress =
+            progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
+
         let decomposed_input = crate::decomposed::DecomposedInput {
             entity_name: resolved.entity_name.clone(),
             geometry_path: geometry_path.clone(),
             material_path: material_path.clone(),
+            assembly_kind: weapon_assembly.as_ref().map(|_| "fps_weapon".to_string()),
+            weapon_assembly: weapon_assembly
+                .as_ref()
+                .map(|assembly| assembly.manifest.clone()),
+            weapon_assembly_diagnostics: weapon_assembly
+                .as_ref()
+                .map(|assembly| assembly.diagnostics.clone()),
             root_mesh,
             root_materials: root_mtl,
-            root_nmc: resolved.nmc,
+            root_nmc,
             root_palette: root_palette.clone(),
             available_palettes,
             root_bones,
@@ -426,10 +506,12 @@ pub fn assemble_glb_with_loadout_with_progress(
             interiors: loaded_interiors,
             paint_variants,
             loadout: crate::decomposed::loadout_json(&tree.root.children),
+            animations: Vec::new(),
         };
-        
+
         let phase_start = Instant::now();
         let decomposed = crate::pipeline::write_decomposed_export_blend(
+            db,
             p4k,
             decomposed_input,
             opts,
@@ -438,7 +520,10 @@ pub fn assemble_glb_with_loadout_with_progress(
             existing_interior_assets,
             existing_asset_loader,
         )?;
-        log::info!("[timing] write_decomposed_export: {:.2}s", phase_start.elapsed().as_secs_f32());
+        log::info!(
+            "[timing] write_decomposed_export: {:.2}s",
+            phase_start.elapsed().as_secs_f32()
+        );
 
         report_progress(progress, ASSEMBLY_STAGE_END, "Writing structured package");
 
@@ -452,18 +537,20 @@ pub fn assemble_glb_with_loadout_with_progress(
         });
     }
 
-    let glb_progress = progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
+    let glb_progress =
+        progress.map(|progress| progress.sub(ASSEMBLY_STAGE_START, ASSEMBLY_STAGE_END));
     let phase_start = Instant::now();
     let glb = crate::gltf::write_glb_with_progress(
         crate::gltf::GlbInput {
             root_mesh: Some(root_mesh),
             root_materials: root_mtl,
             root_textures: root_tex,
-            root_nmc: resolved.nmc,
+            root_nmc,
             root_palette: root_palette.clone(),
             skeleton_bones: root_bones,
             children: child_payloads,
             interiors: loaded_interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut tex_loader,
@@ -492,11 +579,17 @@ pub fn assemble_glb_with_loadout_with_progress(
         },
         glb_progress.as_ref(),
     )?;
-    log::info!("[timing] write_glb_with_progress: {:.2}s", phase_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing] write_glb_with_progress: {:.2}s",
+        phase_start.elapsed().as_secs_f32()
+    );
 
     report_progress(progress, ASSEMBLY_STAGE_END, "Writing bundled file");
 
-    log::info!("[timing] TOTAL export time: {:.2}s", total_start.elapsed().as_secs_f32());
+    log::info!(
+        "[timing] TOTAL export time: {:.2}s",
+        total_start.elapsed().as_secs_f32()
+    );
 
     Ok(ExportResult {
         kind: opts.kind,
@@ -520,6 +613,7 @@ pub(crate) fn path_is_shield_related(path: Option<&str>) -> bool {
 /// record: no loadout, palette, gear or interior. For models no entity
 /// places, such as the `Holoviewer_Ships` ships of concepts.
 pub fn export_geometry_decomposed(
+    db: &Database,
     p4k: &MappedP4k,
     entity_name: &str,
     geometry_path: &str,
@@ -552,8 +646,13 @@ pub fn export_geometry_decomposed(
         interiors: LoadedInteriors::default(),
         paint_variants: Vec::new(),
         loadout: serde_json::Value::Null,
+        animations: Vec::new(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
     };
     let decomposed = crate::pipeline::write_decomposed_export_blend(
+        db,
         p4k,
         decomposed_input,
         opts,

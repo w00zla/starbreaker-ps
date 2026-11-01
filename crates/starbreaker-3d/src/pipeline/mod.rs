@@ -7,8 +7,6 @@
 //! `dump_nmc_nodes`, `dump_hierarchy`.
 
 use std::collections::HashSet;
-use std::str::FromStr;
-
 use starbreaker_datacore::database::Database;
 use starbreaker_datacore::types::Record;
 use starbreaker_dds::ReadSibling;
@@ -20,10 +18,15 @@ use crate::nmc;
 use crate::types::MaterialTextures;
 
 mod textures;
-pub(crate) use self::textures::{cached_load, load_diffuse_texture, load_normal_texture, PngCache};
 use self::textures::*;
+pub(crate) use self::textures::cached_load;
+pub(crate) use self::textures::{
+    PngCache, RoughnessCache, cached_load_keyed, load_diffuse_texture, load_normal_texture,
+    load_roughness_texture, load_roughness_texture_result, png_cache_key,
+};
 mod interiors;
 pub(crate) use self::interiors::*;
+pub use crate::socpak::SocpakHierarchyNode;
 mod nmc_bridge;
 pub(crate) use self::nmc_bridge::*;
 mod child_payload;
@@ -31,20 +34,31 @@ pub(crate) use self::child_payload::*;
 mod loadout;
 pub use self::loadout::resolve_loadout_meshes;
 pub(crate) use self::loadout::*;
-mod entity_export;
+pub(crate) mod entity_export;
+mod geometry_variant;
 pub(crate) use self::entity_export::*;
+mod weapon_assembly;
+pub(crate) use self::weapon_assembly::*;
 
 mod palette;
 pub use self::palette::*;
+mod interior_animation;
+pub(crate) use self::interior_animation::*;
 mod vehicle;
 pub use self::vehicle::*;
 mod glb_assembly;
 pub use self::glb_assembly::{assemble_glb_with_loadout, assemble_glb_with_loadout_with_progress, export_geometry_decomposed};
 pub(crate) use self::glb_assembly::path_is_shield_related;
 mod blend_assembly;
+pub(crate) use blend_assembly::mesh_to_blend;
 pub use self::blend_assembly::write_decomposed_export_blend;
 
-
+pub fn inspect_socpak_hierarchy(
+    p4k: &MappedP4k,
+    socpak_path: &str,
+) -> Result<crate::socpak::SocpakHierarchyNode, Error> {
+    crate::socpak::inspect_interior_tree_from_socpak(p4k, socpak_path)
+}
 
 type InteriorMeshAsset = (
     crate::Mesh,
@@ -152,6 +166,12 @@ pub struct ExportOptions {
     /// Take the paint variant's SubGeometry, the one tagged with the record
     /// name's suffix (item exports; ships never set it).
     pub variant_subgeometry: bool,
+    /// Decomposed fast path: emit only UI-generated images and required scene manifests.
+    pub ui_only_files: bool,
+    /// Optional normalized lowercase socpak paths to include during inherited
+    /// interior discovery. `None` exports every discovered container.
+    pub socpak_path_filter: Option<HashSet<String>>,
+    pub geometry_tag: Option<String>,
 }
 
 impl Default for ExportOptions {
@@ -177,6 +197,9 @@ impl Default for ExportOptions {
             separate_interior_collection: false,
             worn_subgeometry_tag: None,
             variant_subgeometry: false,
+            ui_only_files: false,
+            socpak_path_filter: None,
+            geometry_tag: None,
         }
     }
 }
@@ -225,7 +248,10 @@ impl ExportedFileKind {
     }
 
     pub fn is_reusable_asset(self) -> bool {
-        matches!(self, Self::MeshAsset | Self::MaterialSidecar | Self::TextureAsset)
+        matches!(
+            self,
+            Self::MeshAsset | Self::MaterialSidecar | Self::TextureAsset
+        )
     }
 }
 
@@ -263,7 +289,6 @@ impl ExportResult {
         }
     }
 }
-
 
 /// Export an entity with its loadout tree as a single GLB.
 ///
@@ -335,19 +360,29 @@ pub fn socpaks_to_glb(
 
     let mut payloads = Vec::new();
     for socpak_path in socpak_paths {
-        match socpak::load_interior_from_socpak(
+        if opts
+            .socpak_path_filter
+            .as_ref()
+            .is_some_and(|filter| !filter.contains(&socpak::normalize_socpak_filter_key(socpak_path)))
+        {
+            continue;
+        }
+        match socpak::load_interior_tree_from_socpak_filtered_with_progress(
             p4k,
             socpak_path,
             identity,
             identity,
             std::slice::from_ref(&identity),
+            opts.socpak_path_filter.as_ref(),
+            &mut |_| {},
         ) {
-            Ok(p) => payloads.push(p),
+            Ok(mut tree_payloads) => payloads.append(&mut tree_payloads),
             Err(e) => log::warn!("failed to load {socpak_path}: {e}"),
         }
     }
 
-    let interiors = build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    let interiors =
+        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
 
     let no_tex_opts = ExportOptions {
         material_mode: MaterialMode::Colors,
@@ -360,33 +395,39 @@ pub fn socpaks_to_glb(
         ) -> Option<MaterialTextures>,
     > = Box::new(|_, _| None);
     let mut interior_png_cache = PngCache::new();
-    let mut interior_mesh_loader =
-        |entry: &InteriorCgfEntry| -> Option<(crate::Mesh, Option<mtl::MtlFile>, Option<crate::nmc::NodeMeshCombo>)> {
-            match export_cgf_from_path(
-                p4k,
-                &entry.cgf_path,
-                entry.material_path.as_deref(),
-                &no_tex_opts,
-                &mut interior_png_cache,
-                false,
-            ) {
-                Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
-                    let needs_bake = mesh.scaling_min.iter().zip(&mesh.model_min)
-                        .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
-                        .any(|(s, m)| (s - m).abs() > 0.01);
-                    let mesh = if needs_bake {
-                        bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
-                    } else {
-                        mesh
-                    };
-                    Some((mesh, mtl, nmc))
-                }
-                Err(e) => {
-                    log::warn!("failed to load CGF {}: {e}", entry.cgf_path);
-                    None
-                }
+    let mut interior_mesh_loader = |entry: &InteriorCgfEntry| -> Option<(
+        crate::Mesh,
+        Option<mtl::MtlFile>,
+        Option<crate::nmc::NodeMeshCombo>,
+    )> {
+        match export_cgf_from_path(
+            p4k,
+            &entry.cgf_path,
+            entry.material_path.as_deref(),
+            &no_tex_opts,
+            &mut interior_png_cache,
+            false,
+        ) {
+            Ok((mesh, mtl, _tex, nmc, _palette, _, _, _bones, _skeleton_source_path)) => {
+                let needs_bake = mesh
+                    .scaling_min
+                    .iter()
+                    .zip(&mesh.model_min)
+                    .chain(mesh.scaling_max.iter().zip(&mesh.model_max))
+                    .any(|(s, m)| (s - m).abs() > 0.01);
+                let mesh = if needs_bake {
+                    bake_nmc_into_mesh(mesh, nmc.as_ref(), false)
+                } else {
+                    mesh
+                };
+                Some((mesh, mtl, nmc))
             }
-        };
+            Err(e) => {
+                log::warn!("failed to load CGF {}: {e}", entry.cgf_path);
+                None
+            }
+        }
+    };
 
     crate::gltf::write_glb(
         crate::gltf::GlbInput {
@@ -398,6 +439,7 @@ pub fn socpaks_to_glb(
             skeleton_bones: Vec::new(),
             children: Vec::new(),
             interiors,
+            animations: Vec::new(),
         },
         &mut crate::gltf::GlbLoaders {
             load_textures: &mut no_tex,
@@ -427,33 +469,196 @@ pub fn socpaks_to_glb(
     )
 }
 
+/// Export explicit socpak roots as a decomposed native Blender package.
+///
+/// Socpaks do not have a ship/entity root mesh, so the package uses an empty
+/// generated root asset and carries the real visual content through `interiors`.
+pub fn socpaks_to_decomposed_blend(
+    db: &Database,
+    p4k: &MappedP4k,
+    socpak_paths: &[String],
+    export_name: &str,
+    opts: &ExportOptions,
+) -> Result<DecomposedExport, Error> {
+    let mut ignore_progress = |_progress: SocpakExportProgress| {};
+    socpaks_to_decomposed_blend_with_progress(
+        db,
+        p4k,
+        socpak_paths,
+        export_name,
+        opts,
+        &mut ignore_progress,
+    )
+}
+
+#[derive(Debug, Clone)]
+pub struct SocpakExportProgress {
+    pub socpak_path: String,
+    pub depth: usize,
+    pub containers_loaded: usize,
+    pub child_count: usize,
+    pub mesh_count: usize,
+    pub light_count: usize,
+    pub stage: String,
+}
+
+/// Export explicit socpak roots as a decomposed native Blender package, reporting
+/// cheap progress from the recursive socpak tree walk.
+pub fn socpaks_to_decomposed_blend_with_progress<F>(
+    db: &Database,
+    p4k: &MappedP4k,
+    socpak_paths: &[String],
+    export_name: &str,
+    opts: &ExportOptions,
+    progress: &mut F,
+) -> Result<DecomposedExport, Error>
+where
+    F: FnMut(SocpakExportProgress),
+{
+    use crate::decomposed::DecomposedInput;
+    use crate::socpak;
+
+    ensure_supported_export_options(opts)?;
+    if opts.kind != ExportKind::Decomposed || opts.format != ExportFormat::Blend {
+        return Err(Error::UnsupportedExportFormat(
+            "socpak decomposed blend export requires kind=Decomposed and format=Blend".to_string(),
+        ));
+    }
+
+    let identity = glam::Mat4::IDENTITY.to_cols_array_2d();
+    let mut payloads = Vec::new();
+    for socpak_path in socpak_paths {
+        if opts
+            .socpak_path_filter
+            .as_ref()
+            .is_some_and(|filter| !filter.contains(&socpak::normalize_socpak_filter_key(socpak_path)))
+        {
+            continue;
+        }
+        match socpak::load_interior_tree_from_socpak_filtered_with_progress(
+            p4k,
+            socpak_path,
+            identity,
+            identity,
+            std::slice::from_ref(&identity),
+            opts.socpak_path_filter.as_ref(),
+            &mut |tree_progress| {
+                progress(SocpakExportProgress {
+                    socpak_path: tree_progress.socpak_path,
+                    depth: tree_progress.depth,
+                    containers_loaded: tree_progress.containers_loaded,
+                    child_count: tree_progress.child_count,
+                    mesh_count: tree_progress.mesh_count,
+                    light_count: tree_progress.light_count,
+                    stage: tree_progress.stage,
+                });
+            },
+        ) {
+            Ok(mut tree_payloads) => payloads.append(&mut tree_payloads),
+            Err(e) => log::warn!("failed to load {socpak_path}: {e}"),
+        }
+    }
+
+    let mut interiors =
+        build_interiors_from_payloads(db, p4k, &payloads, opts.include_lights, opts.lod_level);
+    // Animated interior entities (`.cga` doors/elevators with a sibling
+    // `.chrparams`) become decomposed children so their skeletal `.caf` clips are
+    // extracted by the existing animation pipeline; this also removes them from
+    // the static interior placements to avoid duplicate geometry.
+    let anim_children_start = std::time::Instant::now();
+    let children = if opts.include_animations {
+        extract_animated_interior_children(db, p4k, &mut interiors, opts)
+    } else {
+        Vec::new()
+    };
+    log::info!(
+        "[timing][socpak] animated_interior_children ({} children): {:.2}s",
+        children.len(),
+        anim_children_start.elapsed().as_secs_f32()
+    );
+    let input = DecomposedInput {
+        entity_name: export_name.to_string(),
+        geometry_path: String::new(),
+        material_path: String::new(),
+        assembly_kind: None,
+        weapon_assembly: None,
+        weapon_assembly_diagnostics: None,
+        root_mesh: empty_socpak_scene_root_mesh(),
+        root_materials: None,
+        root_nmc: None,
+        root_palette: None,
+        available_palettes: Vec::new(),
+        root_bones: Vec::new(),
+        root_skeleton_source_path: None,
+        root_animation_controller: None,
+        children,
+        interiors,
+        paint_variants: Vec::new(),
+        animations: Vec::new(),
+        loadout: serde_json::Value::Null,
+        nested_vehicle_names: HashSet::new(),
+    };
+
+    write_decomposed_export_blend(db, p4k, input, opts, None, None, None, None)
+}
+
+fn empty_socpak_scene_root_mesh() -> crate::types::Mesh {
+    crate::types::Mesh::empty()
+}
+
 /// Write NMC node properties for a geometry path into the JSON output.
 fn dump_nmc_nodes(out: &mut String, key: &str, p4k: &MappedP4k, geom: &str, mtl: &str) {
     use std::fmt::Write;
-    if geom.is_empty() { return; }
+    if geom.is_empty() {
+        return;
+    }
     let (nmc, _) = load_nmc_and_material(p4k, geom, mtl);
     if let Some(ref nmc) = nmc {
         let _ = write!(out, "  \"{key}\": [\n");
         for node in &nmc.nodes {
-            let _ = write!(out, "    {{\"node\": {:?}, \"type\": {}", node.name, node.geometry_type);
+            let _ = write!(
+                out,
+                "    {{\"node\": {:?}, \"type\": {}",
+                node.name, node.geometry_type
+            );
             // Include bone_to_world for non-identity transforms (helpers, attachment points)
             let b = &node.bone_to_world;
-            let is_identity = (b[0][0] - 1.0).abs() < 0.001 && (b[1][1] - 1.0).abs() < 0.001
+            let is_identity = (b[0][0] - 1.0).abs() < 0.001
+                && (b[1][1] - 1.0).abs() < 0.001
                 && (b[2][2] - 1.0).abs() < 0.001
-                && b[0][3].abs() < 0.001 && b[1][3].abs() < 0.001 && b[2][3].abs() < 0.001
-                && b[0][1].abs() < 0.001 && b[0][2].abs() < 0.001
-                && b[1][0].abs() < 0.001 && b[1][2].abs() < 0.001
-                && b[2][0].abs() < 0.001 && b[2][1].abs() < 0.001;
+                && b[0][3].abs() < 0.001
+                && b[1][3].abs() < 0.001
+                && b[2][3].abs() < 0.001
+                && b[0][1].abs() < 0.001
+                && b[0][2].abs() < 0.001
+                && b[1][0].abs() < 0.001
+                && b[1][2].abs() < 0.001
+                && b[2][0].abs() < 0.001
+                && b[2][1].abs() < 0.001;
             if !is_identity {
-                let _ = write!(out, ", \"bone_to_world\": [[{:.4},{:.4},{:.4},{:.4}],[{:.4},{:.4},{:.4},{:.4}],[{:.4},{:.4},{:.4},{:.4}]]",
-                    b[0][0], b[0][1], b[0][2], b[0][3],
-                    b[1][0], b[1][1], b[1][2], b[1][3],
-                    b[2][0], b[2][1], b[2][2], b[2][3]);
+                let _ = write!(
+                    out,
+                    ", \"bone_to_world\": [[{:.4},{:.4},{:.4},{:.4}],[{:.4},{:.4},{:.4},{:.4}],[{:.4},{:.4},{:.4},{:.4}]]",
+                    b[0][0],
+                    b[0][1],
+                    b[0][2],
+                    b[0][3],
+                    b[1][0],
+                    b[1][1],
+                    b[1][2],
+                    b[1][3],
+                    b[2][0],
+                    b[2][1],
+                    b[2][2],
+                    b[2][3]
+                );
             }
             if !node.properties.is_empty() {
                 let _ = write!(out, ", \"props\": {{");
                 for (i, (k, v)) in node.properties.iter().enumerate() {
-                    if i > 0 { let _ = write!(out, ", "); }
+                    if i > 0 {
+                        let _ = write!(out, ", ");
+                    }
                     let _ = write!(out, "{:?}: {:?}", k, v);
                 }
                 let _ = write!(out, "}}");
@@ -486,10 +691,12 @@ pub fn dump_hierarchy(
     let root_geom = geom_compiled
         .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
         .unwrap_or_default();
-    let mtl_compiled = db.compile_path::<String>(
-        record.struct_id(),
-        "Components[SGeometryResourceParams].Geometry.Geometry.Material.path",
-    ).ok();
+    let mtl_compiled = db
+        .compile_path::<String>(
+            record.struct_id(),
+            "Components[SGeometryResourceParams].Geometry.Geometry.Material.path",
+        )
+        .ok();
     let root_mtl = mtl_compiled
         .and_then(|c| db.query_single::<String>(&c, record).ok().flatten())
         .unwrap_or_default();
@@ -532,15 +739,20 @@ pub fn dump_hierarchy(
                 let mat = node.material_path.as_deref().unwrap_or("");
                 let (nmc, _) = load_nmc_and_material(p4k, geom, mat);
                 if let Some(ref nmc) = nmc {
-                    let nodes_with_props: Vec<_> = nmc.nodes.iter()
+                    let nodes_with_props: Vec<_> = nmc
+                        .nodes
+                        .iter()
                         .filter(|n| !n.properties.is_empty())
                         .collect();
                     if !nodes_with_props.is_empty() {
                         let _ = write!(out, ",\n{indent}  \"nmc_properties\": [\n");
                         for n in &nodes_with_props {
-                            let _ = write!(out, "{indent}    {{\"node\": {:?}, \"props\": {{", n.name);
+                            let _ =
+                                write!(out, "{indent}    {{\"node\": {:?}, \"props\": {{", n.name);
                             for (i, (k, v)) in n.properties.iter().enumerate() {
-                                if i > 0 { let _ = write!(out, ", "); }
+                                if i > 0 {
+                                    let _ = write!(out, ", ");
+                                }
                                 let _ = write!(out, "{:?}: {:?}", k, v);
                             }
                             let _ = write!(out, "}}}},\n");
@@ -551,7 +763,14 @@ pub fn dump_hierarchy(
             }
             if !node.children.is_empty() {
                 let _ = write!(out, ",\n{indent}  \"children\": [\n");
-                dump_loadout_nodes(out, p4k, &node.children, &node.entity_name, depth + 2, invisible_ports);
+                dump_loadout_nodes(
+                    out,
+                    p4k,
+                    &node.children,
+                    &node.entity_name,
+                    depth + 2,
+                    invisible_ports,
+                );
                 let _ = write!(out, "{indent}  ]\n");
             } else {
                 let _ = write!(out, "\n");
@@ -559,7 +778,14 @@ pub fn dump_hierarchy(
             let _ = write!(out, "{indent}}},\n");
         }
     }
-    dump_loadout_nodes(&mut out, p4k, &tree.root.children, &tree.root.entity_name, 0, &invisible_ports);
+    dump_loadout_nodes(
+        &mut out,
+        p4k,
+        &tree.root.children,
+        &tree.root.entity_name,
+        0,
+        &invisible_ports,
+    );
     let _ = write!(out, "  ],\n");
 
     // Interior containers
@@ -571,23 +797,23 @@ pub fn dump_hierarchy(
             "    {{\n      \"container\": {:?},\n      \"meshes\": [\n",
             container.name
         );
-        for (cgf_idx, transform, _placement_palette) in &container.placements {
-            let entry = &interiors.unique_cgfs[*cgf_idx];
-            let tx = transform[3][0];
-            let ty = transform[3][1];
-            let tz = transform[3][2];
+        for placement in &container.placements {
+            let entry = &interiors.unique_cgfs[placement.mesh_index];
+            let tx = placement.transform[3][0];
+            let ty = placement.transform[3][1];
+            let tz = placement.transform[3][2];
             // Extract scale from rotation columns
-            let sx = (transform[0][0] * transform[0][0]
-                + transform[0][1] * transform[0][1]
-                + transform[0][2] * transform[0][2])
+            let sx = (placement.transform[0][0] * placement.transform[0][0]
+                + placement.transform[0][1] * placement.transform[0][1]
+                + placement.transform[0][2] * placement.transform[0][2])
                 .sqrt();
-            let sy = (transform[1][0] * transform[1][0]
-                + transform[1][1] * transform[1][1]
-                + transform[1][2] * transform[1][2])
+            let sy = (placement.transform[1][0] * placement.transform[1][0]
+                + placement.transform[1][1] * placement.transform[1][1]
+                + placement.transform[1][2] * placement.transform[1][2])
                 .sqrt();
-            let sz = (transform[2][0] * transform[2][0]
-                + transform[2][1] * transform[2][1]
-                + transform[2][2] * transform[2][2])
+            let sz = (placement.transform[2][0] * placement.transform[2][0]
+                + placement.transform[2][1] * placement.transform[2][1]
+                + placement.transform[2][2] * placement.transform[2][2])
                 .sqrt();
             let _ = write!(
                 out,
@@ -697,7 +923,8 @@ mod tests {
             model_max: [0.0; 3],
             scaling_min: [0.0; 3],
             scaling_max: [0.0; 3],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         }
     }
 
@@ -715,6 +942,8 @@ mod tests {
             local_rotation: [1.0, 0.0, 0.0, 0.0],
             world_position,
             world_rotation: [1.0, 0.0, 0.0, 0.0],
+            bind_world_position: world_position,
+            bind_world_rotation: [1.0, 0.0, 0.0, 0.0],
         }
     }
 
@@ -731,8 +960,8 @@ mod tests {
             sample_bone("foot", Some(0), [1.5, 2.5, 0.0], [5.0, 4.0, 0.0]),
         ];
 
-        let nmc = synthesize_nmc_from_bones(&mesh, &bones)
-            .expect("expected a synthetic node hierarchy");
+        let nmc =
+            synthesize_nmc_from_bones(&mesh, &bones).expect("expected a synthetic node hierarchy");
 
         assert_eq!(nmc.nodes.len(), 2);
         assert_eq!(nmc.nodes[0].name, "root");
@@ -789,7 +1018,8 @@ mod tests {
             model_max: [6.0, 5.0, 0.0],
             scaling_min: [2.0, 0.0, 0.0],
             scaling_max: [6.0, 5.0, 0.0],
-            skin_weights: None,
+            skin: None,
+            morph_targets: Vec::new(),
         };
         let bones = vec![
             sample_bone("root", None, [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]),
@@ -832,38 +1062,57 @@ mod tests {
             "hardpoint_proxy",
             false,
             false,
-            vec![resolved_node("weapon", "hardpoint_weapon", true, false, Vec::new())],
+            vec![resolved_node(
+                "weapon",
+                "hardpoint_weapon",
+                true,
+                false,
+                Vec::new(),
+            )],
         );
         let rack = resolved_node(
             "rack",
             "hardpoint_rack",
             false,
             true,
-            vec![resolved_node("missile", "hardpoint_missile", true, false, Vec::new())],
+            vec![resolved_node(
+                "missile",
+                "hardpoint_missile",
+                true,
+                false,
+                Vec::new(),
+            )],
         );
 
         let mut specs = Vec::new();
         collect_child_payload_specs(&[proxy, rack], "root_ship", None, &mut specs);
 
-        assert_eq!(specs.len(), 3);
-        assert_eq!(specs[0].child.entity_name, "weapon");
+        assert_eq!(specs.len(), 4);
+        assert_eq!(specs[0].child.entity_name, "proxy");
         assert_eq!(specs[0].parent_entity_name, "root_ship");
         assert_eq!(specs[0].parent_node_name, "hardpoint_proxy");
 
-        assert_eq!(specs[1].child.entity_name, "rack");
+        assert_eq!(specs[1].child.entity_name, "weapon");
         assert_eq!(specs[1].parent_entity_name, "root_ship");
-        assert_eq!(specs[1].parent_node_name, "hardpoint_rack");
+        assert_eq!(specs[1].parent_node_name, "hardpoint_proxy");
 
-        assert_eq!(specs[2].child.entity_name, "missile");
-        assert_eq!(specs[2].parent_entity_name, "rack");
-        assert_eq!(specs[2].parent_node_name, "hardpoint_missile");
+        assert_eq!(specs[2].child.entity_name, "rack");
+        assert_eq!(specs[2].parent_entity_name, "root_ship");
+        assert_eq!(specs[2].parent_node_name, "hardpoint_rack");
+
+        assert_eq!(specs[3].child.entity_name, "missile");
+        assert_eq!(specs[3].parent_entity_name, "rack");
+        assert_eq!(specs[3].parent_node_name, "hardpoint_missile");
     }
 
     #[test]
     fn tint_palette_family_keys_include_short_name_and_family_suffix() {
         let keys = tint_palette_family_keys("EntityClassDefinition.rsi_aurora_mk2");
 
-        assert_eq!(keys, vec!["aurora_mk2".to_string(), "rsi_aurora_mk2".to_string()]);
+        assert_eq!(
+            keys,
+            vec!["aurora_mk2".to_string(), "rsi_aurora_mk2".to_string()]
+        );
     }
 
     #[test]
@@ -871,9 +1120,18 @@ mod tests {
         let keys = tint_palette_family_keys("rsi_aurora_mk2");
 
         assert!(tint_palette_matches_family("rsi_aurora_mk2", &keys));
-        assert!(tint_palette_matches_family("aurora_mk2_pink_green_purple", &keys));
-        assert!(!tint_palette_matches_family("rsi_interior_aurora_mk2_base", &keys));
-        assert!(!tint_palette_matches_family("misc_freelancer_black_red", &keys));
+        assert!(tint_palette_matches_family(
+            "aurora_mk2_pink_green_purple",
+            &keys
+        ));
+        assert!(!tint_palette_matches_family(
+            "rsi_interior_aurora_mk2_base",
+            &keys
+        ));
+        assert!(!tint_palette_matches_family(
+            "misc_freelancer_black_red",
+            &keys
+        ));
     }
 
     #[test]
@@ -883,8 +1141,7 @@ mod tests {
             ..ExportOptions::default()
         };
 
-        ensure_supported_export_options(&opts)
-            .expect("decomposed export kind should be accepted");
+        ensure_supported_export_options(&opts).expect("decomposed export kind should be accepted");
     }
 
     #[test]
