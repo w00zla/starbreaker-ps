@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -255,6 +255,8 @@ class LayerManifestEntry:
     layer_snapshot: JsonDict
     resolved_material: JsonDict
     raw: JsonDict
+    # A layer without a layer file (`flat_layers`): only its tint.
+    flat: bool = False
 
     @classmethod
     def from_value(cls, value: Any) -> LayerManifestEntry:
@@ -319,6 +321,9 @@ class SubmaterialRecord:
     variant_membership: JsonDict
     virtual_inputs: list[str]
     raw: JsonDict
+    # LayerBlend layers without a layer file, a flat tint each (the
+    # Artimex Chairman's Club helmet's glowing eye strip).
+    flat_layers: list[LayerManifestEntry] = field(default_factory=list)
 
     @classmethod
     def from_value(cls, value: Any) -> SubmaterialRecord:
@@ -342,6 +347,7 @@ class SubmaterialRecord:
             variant_membership=_as_dict(data.get("variant_membership")),
             virtual_inputs=[str(item) for item in data.get("virtual_inputs", [])],
             raw=data,
+            flat_layers=[replace(LayerManifestEntry.from_value(item), flat=True) for item in data.get("flat_layers", [])],
         )
 
 

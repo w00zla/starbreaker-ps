@@ -3141,6 +3141,19 @@ fn build_submaterial_json(
                     .unwrap_or_default(),
             })
         }).collect::<Vec<_>>(),
+        // Layers without a layer file: a flat tint, no textures to export.
+        "flat_layers": material.flat_layers.iter().map(|layer| serde_json::json!({
+            "name": layer.name,
+            "authored_attributes": authored_attributes_json(&layer.authored_attributes),
+            "tint_color": layer.tint_color,
+            "wear_tint": layer.wear_tint,
+            "palette_channel": palette_channel_json(layer.palette_tint, false),
+            "gloss_mult": layer.gloss_mult,
+            "wear_gloss": layer.wear_gloss,
+            "uv_tiling": layer.uv_tiling,
+            "height_bias": layer.height_bias,
+            "height_scale": layer.height_scale,
+        })).collect::<Vec<_>>(),
         "palette_routing": {
             "material_channel": palette_channel_json(material.palette_tint, material.is_glass()),
             "layer_channels": material.layers.iter().enumerate().filter_map(|(layer_index, layer)| {
@@ -6138,6 +6151,7 @@ mod tests {
                     }],
                 }),
             }],
+            flat_layers: Vec::new(),
             palette_tint: 2,
             texture_slots: vec![
                 mtl::TextureSlotBinding {
@@ -7243,6 +7257,62 @@ mod tests {
             value["submaterials"][0]["authored_public_params"][0]["name"],
             serde_json::json!("IridescenceIntensity")
         );
+    }
+
+    #[test]
+    fn material_sidecar_json_keeps_flat_layers_apart_from_the_manifest() {
+        // The Chairman's Club helmet's face01_m: BaseLayer1 has no layer file,
+        // only a red-orange tint; its blend-map channel is the glowing eye strip.
+        let mut material = sample_submaterial();
+        material.flat_layers = vec![mtl::MatLayer {
+            name: "BaseLayer1".into(),
+            path: String::new(),
+            sub_material: String::new(),
+            tint_color: [0.27049783, 0.013702084, 0.0],
+            wear_tint: [1.0, 1.0, 1.0],
+            palette_tint: 0,
+            gloss_mult: 0.36,
+            wear_gloss: 1.0,
+            uv_tiling: 61.8,
+            height_bias: 0.0,
+            height_scale: 1.0,
+            authored_attributes: vec![mtl::AuthoredAttribute { name: "Name".into(), value: "BaseLayer1".into() }],
+            authored_child_blocks: Vec::new(),
+            snapshot: None,
+            resolved_material: None,
+        }];
+        let materials = MtlFile {
+            materials: vec![material],
+            source_path: Some("Data/Objects/Ships/Test/hull.mtl".into()),
+            paint_override: None,
+            material_set: Default::default(),
+        };
+        let extracted = vec![ExtractedMaterialEntry {
+            slot_exports: Vec::new(),
+            direct_texture_exports: Vec::new(),
+            layer_exports: Vec::new(),
+            derived_texture_exports: Vec::new(),
+            ddna_derivations: Vec::new(),
+        }];
+
+        let value = build_material_sidecar_value(
+            &materials,
+            "Data/Objects/Ships/Test/hull.mtl",
+            "Data/Objects/Ships/Test/hull.materials.json",
+            "Packages/ARGO MOLE/palettes.json",
+            &extracted,
+            &[0],
+        );
+
+        let sub = &value["submaterials"][0];
+        assert_eq!(sub["layer_manifest"].as_array().unwrap().len(), 1, "the textured layers stay as they were");
+        let flat = &sub["flat_layers"][0];
+        assert_eq!(flat["name"], serde_json::json!("BaseLayer1"));
+        assert_eq!(flat["tint_color"], serde_json::json!([0.27049783f32, 0.013702084f32, 0.0f32]));
+        assert_eq!(flat["gloss_mult"], serde_json::json!(0.36f32));
+        assert_eq!(flat["uv_tiling"], serde_json::json!(61.8f32));
+        assert!(flat["palette_channel"].is_null());
+        assert_eq!(flat["authored_attributes"][0]["name"], serde_json::json!("Name"));
     }
 
     #[test]

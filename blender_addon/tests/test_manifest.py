@@ -12,7 +12,7 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import InteriorContainerRecord, LightRecord, LightState, MaterialSidecar, PackageBundle, SceneInstanceRecord, SceneManifest, TextureReference, infer_export_root
+from starbreaker_addon.manifest import InteriorContainerRecord, LightRecord, LightState, MaterialSidecar, PackageBundle, SceneInstanceRecord, SceneManifest, SubmaterialRecord, TextureReference, infer_export_root
 
 
 _STARBREAKER_BIN = STARBREAKER_ROOT / "target/debug/starbreaker"
@@ -306,6 +306,26 @@ class ManifestTests(unittest.TestCase):
         layer = next(layer for layer in layered.layer_manifest if layer.texture_slots)
         smoothness_texture = next(texture for texture in layer.texture_slots if texture.alpha_semantic == "smoothness")
         self.assertEqual(smoothness_texture.texture_identity, "ddna_normal")
+
+    def test_flat_layers_are_read_apart_from_the_layer_manifest(self) -> None:
+        # The Artimex Chairman's Club helmet's face01_m: BaseLayer1 has no layer file.
+        record = SubmaterialRecord.from_value({
+            "submaterial_name": "face01_m",
+            "layer_manifest": [{"index": 0, "name": "BaseLayer2", "tint_color": [1, 1, 1]}],
+            "flat_layers": [{"name": "BaseLayer1", "tint_color": [0.27049783, 0.013702084, 0.0], "gloss_mult": 0.36,
+                             "uv_tiling": 61.8, "palette_channel": None}],
+        })
+        self.assertEqual([layer.name for layer in record.layer_manifest], ["BaseLayer2"])
+        self.assertFalse(record.layer_manifest[0].flat)
+        (flat,) = record.flat_layers
+        self.assertEqual(flat.name, "BaseLayer1")
+        self.assertTrue(flat.flat)
+        self.assertEqual(flat.tint_color, (0.27049783, 0.013702084, 0.0))
+        self.assertAlmostEqual(flat.gloss_mult or 0.0, 0.36)
+        self.assertIsNone(flat.diffuse_export_path)
+        self.assertIsNone(flat.palette_channel)
+        # Sidecars from before have none.
+        self.assertEqual(SubmaterialRecord.from_value({"submaterial_name": "x"}).flat_layers, [])
 
     def test_layer_manifest_preserves_resolved_layer_details(self) -> None:
         exterior_path = REPO_ROOT / "ships/Data/Objects/Spaceships/Ships/ARGO/MOLE/argo_mole_exterior_TEX0.materials.json"

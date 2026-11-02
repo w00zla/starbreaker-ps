@@ -154,6 +154,11 @@ pub struct SubMaterial {
     /// Parsed MatLayers (LayerBlend/HardSurface shaders). Each layer references
     /// an external .mtl with its own textures, tint color, and palette channel.
     pub layers: Vec<MatLayer>,
+    /// MatLayers without a layer file (`Path=""`): a flat TintColor where the
+    /// blend map picks their slot. Kept apart from `layers`, whose users take
+    /// the first entry as the base layer file. The Artimex Chairman's Club
+    /// helmet's eye strip is one (face01_m BaseLayer1, red-orange, glowing).
+    pub flat_layers: Vec<MatLayer>,
     /// Palette tint channel from first layer with PaletteTint > 0: 1=entryA, 2=entryB, 3=entryC, 0=none.
     pub palette_tint: u8,
     /// All parsed texture bindings, including non-exported slots and virtual inputs.
@@ -892,6 +897,7 @@ fn parse_sub_material(
     let mut diffuse_tex = None;
     let mut normal_tex = None;
     let mut layers = Vec::new();
+    let mut flat_layers = Vec::new();
     let mut palette_tint: u8 = 0;
     let mut texture_slots = Vec::new();
     let mut public_params = Vec::new();
@@ -980,24 +986,28 @@ fn parse_sub_material(
                             _ => {}
                         }
                     }
-                    if !lpath.is_empty() {
-                        layers.push(MatLayer {
-                            name: lname,
-                            path: lpath,
-                            sub_material: lsub_material,
-                            tint_color: ltint,
-                            wear_tint: lwear_tint,
-                            palette_tint: lpalette,
-                            gloss_mult: lgloss_mult,
-                            wear_gloss: lwear_gloss,
-                            uv_tiling: luv_tiling,
-                            height_bias: lheight_bias,
-                            height_scale: lheight_scale,
-                            authored_attributes,
-                            authored_child_blocks,
-                            snapshot: None,
-                            resolved_material: None,
-                        });
+                    let has_file = !lpath.is_empty();
+                    let layer = MatLayer {
+                        name: lname,
+                        path: lpath,
+                        sub_material: lsub_material,
+                        tint_color: ltint,
+                        wear_tint: lwear_tint,
+                        palette_tint: lpalette,
+                        gloss_mult: lgloss_mult,
+                        wear_gloss: lwear_gloss,
+                        uv_tiling: luv_tiling,
+                        height_bias: lheight_bias,
+                        height_scale: lheight_scale,
+                        authored_attributes,
+                        authored_child_blocks,
+                        snapshot: None,
+                        resolved_material: None,
+                    };
+                    if has_file {
+                        layers.push(layer);
+                    } else {
+                        flat_layers.push(layer);
                     }
                     // First layer with PaletteTint > 0 determines the palette channel
                     if lpalette > 0 && palette_tint == 0 {
@@ -1028,6 +1038,7 @@ fn parse_sub_material(
         diffuse_tex,
         normal_tex,
         layers,
+        flat_layers,
         palette_tint,
         texture_slots,
         public_params,
@@ -1263,6 +1274,7 @@ mod tests {
             diffuse_tex: None,
             normal_tex: None,
             layers: Vec::new(),
+            flat_layers: Vec::new(),
             palette_tint: 0,
             texture_slots: Vec::new(),
             public_params: Vec::new(),
@@ -1588,6 +1600,7 @@ mod tests {
             diffuse_tex: None,
             normal_tex: None,
             layers: Vec::new(),
+            flat_layers: Vec::new(),
             palette_tint: 0,
             texture_slots: Vec::new(),
             public_params: Vec::new(),

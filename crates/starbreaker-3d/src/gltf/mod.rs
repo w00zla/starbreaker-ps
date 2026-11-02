@@ -464,6 +464,7 @@ mod tests {
                 diffuse_tex: Some("shared_diffuse.dds".into()),
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot1".into(),
@@ -564,6 +565,7 @@ mod tests {
                         resolved_material: None,
                     },
                 ],
+                flat_layers: Vec::new(),
                 palette_tint: 1,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot7".into(),
@@ -693,6 +695,7 @@ mod tests {
                 diffuse_tex: Some("textures/glass_console_diff.dds".into()),
                 normal_tex: Some("textures/glass_console_ddna.dds".into()),
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot1".into(),
@@ -741,6 +744,7 @@ mod tests {
                 diffuse_tex: None,
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: Vec::new(),
                 public_params: Vec::new(),
@@ -772,6 +776,7 @@ mod tests {
                 diffuse_tex: None,
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot3".into(),
@@ -810,6 +815,7 @@ mod tests {
                 diffuse_tex: Some("shared_diffuse.dds".into()),
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot1".into(),
@@ -848,6 +854,7 @@ mod tests {
                 diffuse_tex: None,
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: Vec::new(),
                 public_params: Vec::new(),
@@ -879,6 +886,7 @@ mod tests {
                 diffuse_tex: Some("textures/livery_decal.dds".into()),
                 normal_tex: None,
                 layers: Vec::new(),
+                flat_layers: Vec::new(),
                 palette_tint: 0,
                 texture_slots: vec![crate::mtl::TextureSlotBinding {
                     slot: "TexSlot1".into(),

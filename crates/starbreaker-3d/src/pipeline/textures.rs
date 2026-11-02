@@ -1435,6 +1435,7 @@ mod tests {
             diffuse_tex: None,
             normal_tex: None,
             layers: Vec::new(),
+            flat_layers: Vec::new(),
             palette_tint: 0,
             texture_slots: Vec::new(),
             public_params: Vec::new(),
