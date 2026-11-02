@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -68,6 +69,21 @@ class ManifestTests(unittest.TestCase):
     def test_export_root_inference_tolerates_mismatched_package_basename(self) -> None:
         export_root = infer_export_root(VULTURE_SCENE, "Packages/DRAK Vulture_LOD0_TEX0")
         self.assertEqual(export_root, REPO_ROOT / "ships")
+
+    def test_resolve_path_hits_directly_without_scanning_the_export_root(self) -> None:
+        # The index is an rglob over the whole export root (a batch export holds every entity of
+        # its block); building it for paths that exist cost ~0.1 s per opened package.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            texture = root / "Data/Objects/a/b_diff.dds"
+            texture.parent.mkdir(parents=True)
+            texture.write_bytes(b"")
+            bundle = PackageBundle(root, root / "Packages/x/scene.json", None, {}, {}, {})
+            self.assertEqual(bundle.resolve_path("Data/Objects/a/b_diff.dds"), texture)
+            self.assertEqual(bundle.resolve_path("textures/Data/Objects/a/b_diff.dds"), texture)
+            self.assertIsNone(bundle._path_index)
+            self.assertIsNone(bundle.resolve_path("Data/Objects/a/missing.dds"))
+            self.assertIsNotNone(bundle._path_index)
 
     @_requires_argo_fixture
     def test_package_bundle_loads_real_fixture_manifests(self) -> None:

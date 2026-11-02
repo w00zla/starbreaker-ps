@@ -840,12 +840,15 @@ class PackageBundle:
         return self.scene_path.parent.name
 
     def resolve_path(self, relative_path: str | None) -> Path | None:
-        path_index = self._build_path_index()
-        for candidate in _candidate_relative_paths(relative_path):
+        # Every candidate as written first; the case-insensitive index (an rglob over the whole
+        # export root) only when none exists: building it up front cost ~0.1 s per opened package.
+        candidates = _candidate_relative_paths(relative_path)
+        for candidate in candidates:
             direct = self.export_root / Path(candidate)
             if direct.exists():
                 return direct
-            resolved = path_index.get(candidate.lower())
+        for candidate in candidates:
+            resolved = self._build_path_index().get(candidate.lower())
             if resolved is not None:
                 return resolved
         return None
