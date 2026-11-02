@@ -12,15 +12,24 @@ REPO_ROOT = STARBREAKER_ROOT.parent
 
 sys.path.insert(0, str(ADDON_ROOT))
 
-from starbreaker_addon.manifest import FeatureFlags, MaterialSidecar, PaletteRouting, SubmaterialRecord, TextureReference
+from starbreaker_addon.manifest import FeatureFlags, LayerManifestEntry, MaterialSidecar, PaletteRouting, SubmaterialRecord, TextureReference
 from dataclasses import replace
 
 from starbreaker_addon.templates import (
+    GLASS_TINT_HUE,
+    MONITOR_ROUGHNESS,
     active_submaterials,
+    glass_refraction_gloss,
+    glass_tints_from_palette,
     has_virtual_input,
     layer_blend_decal_sheet,
+    layer_blend_glow_color,
+    layer_blend_glow_slots,
     layer_blend_pom_decals,
+    layer_blend_slots,
     material_palette_channels,
+    monitor_emission_tint,
+    monitor_specular,
     representative_textures,
     smoothness_texture_reference,
     template_plan_for_submaterial,
@@ -165,6 +174,68 @@ class TemplateTests(unittest.TestCase):
         self.assertIsNone(layer_blend_pom_decals(plain))
         self.assertEqual(representative_textures(plain)["base_color"], "t/poms_decals_diffa.png")
 
+    def test_layer_blend_slots_take_flat_layers_and_fill_empty_ones_from_below(self) -> None:
+        layer = lambda name, **extra: LayerManifestEntry.from_value({"name": name, **extra})
+        textured = [layer("BaseLayer2"), layer("BaseLayer3"), layer("BaseLayer4"), layer("WearLayer2")]
+        # The Artimex Chairman's Club helmet's face01_m: BaseLayer1 without a layer file.
+        face = replace(
+            synthetic_submaterial("LayerBlend_V2", tokens=["BLEND_MAP"]),
+            layer_manifest=textured,
+            flat_layers=[replace(layer("BaseLayer1", tint_color=[0.27, 0.0137, 0.0]), flat=True)],
+        )
+        slots = layer_blend_slots(face)
+        self.assertEqual({index: entry.name for index, entry in slots.items()},
+                         {1: "BaseLayer1", 2: "BaseLayer2", 3: "BaseLayer3", 4: "BaseLayer4"})
+        self.assertTrue(slots[1].flat)
+        # Without it slot 1 takes the layer underneath (the Zeus shell has BaseLayer2-4).
+        shell = replace(face, flat_layers=[])
+        self.assertEqual(layer_blend_slots(shell)[1].name, "BaseLayer2")
+        # One layer has nothing to blend.
+        self.assertEqual(layer_blend_slots(replace(face, layer_manifest=[layer("BaseLayer2")], flat_layers=[])), {})
+
+    def test_layer_blend_glow_slots_are_the_flat_ones_of_a_glowing_material(self) -> None:
+        layer = lambda name: LayerManifestEntry.from_value({"name": name})
+        attributes = lambda emissive, glow: {"authored_attributes": [
+            {"name": "Emissive", "value": emissive}, {"name": "Glow", "value": glow}]}
+        face = replace(
+            synthetic_submaterial("LayerBlend_V2", tokens=["BLEND_MAP"]),
+            layer_manifest=[layer("BaseLayer2"), layer("BaseLayer3"), layer("BaseLayer4")],
+            flat_layers=[replace(layer("BaseLayer1"), flat=True)],
+            raw=attributes("0.93011099,0.30946895,0.022173885", "0.18000001"),
+        )
+        self.assertEqual(layer_blend_glow_slots(face), frozenset({1}))
+        # No Emissive colour, no Glow, no flat layer or no LayerBlend: nothing glows.
+        self.assertEqual(layer_blend_glow_slots(replace(face, raw=attributes("0,0,0", "0.18"))), frozenset())
+        self.assertEqual(layer_blend_glow_slots(replace(face, raw=attributes("1,1,1", "0"))), frozenset())
+        self.assertEqual(layer_blend_glow_slots(replace(face, flat_layers=[])), frozenset())
+        self.assertEqual(layer_blend_glow_slots(replace(face, shader_family="Illum")), frozenset())
+        # An empty slot over a flat one takes it, glow and all: the CLDA shoulder lights are BaseLayer2-4 without files.
+        lights = replace(face, layer_manifest=[layer("BaseLayer1")],
+                         flat_layers=[replace(layer(name), flat=True) for name in ("BaseLayer2", "BaseLayer3", "BaseLayer4")])
+        self.assertEqual(layer_blend_glow_slots(lights), frozenset({2, 3, 4}))
+
+    def test_layer_blend_glow_color_meets_the_glowing_layers_tint(self) -> None:
+        # The Chairman's Club's eye strip: Emissive orange (R/G 3.0), its flat layer's tint deep red (R/G 19.7); the
+        # inventory tile shows R/G about 7. The geometric mean of both (the tint at Emissive's peak) gave the tile's
+        # 196/79/39 sRGB as 210/84/33; Emissive alone drew it yellowish (207/119/44).
+        layer = lambda name: LayerManifestEntry.from_value({"name": name})
+        face = replace(
+            synthetic_submaterial("LayerBlend_V2", tokens=["BLEND_MAP"]),
+            layer_manifest=[layer("BaseLayer2"), layer("BaseLayer3"), layer("BaseLayer4")],
+            flat_layers=[replace(layer("BaseLayer1"), flat=True, tint_color=(0.27049783, 0.013702084, 0.0))],
+            raw={"authored_attributes": [
+                {"name": "Emissive", "value": "0.93011099,0.30946895,0.022173885"}, {"name": "Glow", "value": "0.18"}]},
+        )
+        color = layer_blend_glow_color(face)
+        self.assertAlmostEqual(color[0], 0.93011099, places=5)
+        self.assertAlmostEqual(color[1], 0.12075, places=4)
+        self.assertAlmostEqual(color[2], 0.0, places=6)
+        # A glowing layer without a tint keeps Emissive.
+        untinted = replace(face, flat_layers=[replace(layer("BaseLayer1"), flat=True, tint_color=None)])
+        self.assertEqual(layer_blend_glow_color(untinted), (0.93011099, 0.30946895, 0.022173885))
+        # Nothing glows: no colour.
+        self.assertIsNone(layer_blend_glow_color(replace(face, flat_layers=[])))
+
     def test_layer_blend_decals_take_the_decal_sheet(self) -> None:
         sheet = TextureReference(role="decal_sheet", source_path=None, export_path="t/sheet.png", export_kind="source", slot="TexSlot9")
         helmet = replace(
@@ -304,6 +375,55 @@ class TemplateTests(unittest.TestCase):
         active = synthetic_submaterial("HardSurface")
         inactive = synthetic_submaterial("NoDraw", active=False)
         self.assertEqual(active_submaterials([active, inactive]), [active])
+
+    def test_glass_tints_from_palette_only_with_use_tint_palette(self) -> None:
+        # Strata microTech visor (%USE_TINT_PALETTE): the palette's glass colour. ORC-mkX Singularity visor (no
+        # flag): its own near-black Diffuse; tinted by the palette's white glass it drew clear.
+        strata = synthetic_submaterial("GlassPBR", tokens=["NORMAL_MAP", "THIN_FILM", "DEPTH_PASS", "USE_TINT_PALETTE"])
+        orc = synthetic_submaterial("GlassPBR", tokens=[])
+        self.assertTrue(glass_tints_from_palette(strata))
+        self.assertFalse(glass_tints_from_palette(orc))
+        # Other shader families keep their palette routing.
+        self.assertTrue(glass_tints_from_palette(synthetic_submaterial("HardSurface", tokens=[])))
+
+    def test_glass_tint_hue_is_neutral(self) -> None:
+        # The template's hue node turned every glass tint by +25° (0.57): the Strata microTech's lime visor drew teal.
+        self.assertEqual(GLASS_TINT_HUE, 0.5)
+
+    def test_screens_are_not_alpha_blended(self) -> None:
+        # Blended surfaces are invisible to Eevee's raytraced refraction: the Fieldsbury Dark Bear's glowing pupils
+        # (Monitor) behind their frosted lenses drew as grey discs.
+        self.assertNotEqual(template_plan_for_submaterial(synthetic_submaterial("Monitor")).blend_method, "BLEND")
+
+    def test_monitor_emission_is_tinted_by_its_diffuse(self) -> None:
+        # The Dark Bear Grape's eye: a white pupil dot as texture, Diffuse purple; in game the pupils glow purple.
+        eye = replace(
+            synthetic_submaterial("Monitor"),
+            raw={"authored_attributes": [{"name": "Diffuse", "value": "0.37626216,0,0.83879912"}]},
+        )
+        self.assertEqual(monitor_emission_tint(eye), (0.37626216, 0.0, 0.83879912))
+        self.assertIsNone(monitor_emission_tint(replace(synthetic_submaterial("Monitor"), raw={})))
+        hard_surface = replace(synthetic_submaterial("HardSurface"), raw=eye.raw)
+        self.assertIsNone(monitor_emission_tint(hard_surface))
+
+    def test_monitor_surface_reflects_its_specular(self) -> None:
+        # The Dark Bear's eyeballs (Monitor, Specular 1,1,1) are silver in game; emission alone drew them black.
+        eye = replace(
+            synthetic_submaterial("Monitor"),
+            raw={"authored_attributes": [{"name": "Specular", "value": "1,1,1"}]},
+        )
+        self.assertEqual(monitor_specular(eye), (1.0, 1.0, 1.0))
+        dark = replace(synthetic_submaterial("Monitor"), raw={"authored_attributes": [{"name": "Specular", "value": "0,0,0"}]})
+        self.assertIsNone(monitor_specular(dark))
+        self.assertIsNone(monitor_specular(replace(synthetic_submaterial("HardSurface"), raw=eye.raw)))
+        self.assertEqual(MONITOR_ROUGHNESS, 0.35)
+
+    def test_glass_refraction_gloss_zero_is_clear(self) -> None:
+        # The Dark Bear's eye lenses author RefractionGloss 0 and look clear in game; taken as frosted they hid the
+        # glowing pupils behind grey discs. Other values stay as authored.
+        self.assertEqual(glass_refraction_gloss(0.0), 1.0)
+        self.assertEqual(glass_refraction_gloss(1.0), 1.0)
+        self.assertEqual(glass_refraction_gloss(0.6), 0.6)
 
 
 if __name__ == "__main__":

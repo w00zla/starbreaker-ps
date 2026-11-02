@@ -84,10 +84,18 @@ from ...palette import (
     palette_finish_specular,
 )
 from ...templates import (
+    GLASS_TINT_HUE,
+    MONITOR_ROUGHNESS,
+    glass_refraction_gloss,
     has_virtual_input,
     layer_blend_decal_sheet,
+    layer_blend_glow_color,
+    layer_blend_glow_slots,
     layer_blend_pom_decals,
+    layer_blend_slots,
     material_palette_channels,
+    monitor_emission_tint,
+    monitor_specular,
     representative_textures,
     template_plan_for_submaterial,
 )
@@ -673,6 +681,29 @@ class BuildersMixin:
             self._patch_mesh_decal_template_metal(group)
         return group
 
+    def _monitor_tinted(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        color_socket: Any,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        """Multiply a Monitor's colour texture by its ``Diffuse`` (``monitor_emission_tint``); others unchanged."""
+        tint = monitor_emission_tint(submaterial)
+        if tint is None:
+            return color_socket
+        mix = nodes.new("ShaderNodeMixRGB")
+        mix.label = "Monitor Tint"
+        mix.location = (x, y)
+        mix.blend_type = "MULTIPLY"
+        mix.inputs[0].default_value = 1.0
+        mix.inputs[2].default_value = (*tint, 1.0)
+        self._link_color_output(color_socket, mix.inputs[1])
+        return mix.outputs[0]
+
     def _patch_glass_template_lightpath(self, group: bpy.types.ShaderNodeTree) -> None:
         """Patch the bundled GlassPBR template to the live validated graph.
 
@@ -680,9 +711,9 @@ class BuildersMixin:
         with the wear gloss texture mixed in by ``WearBlendBase``. TexSlot6
         holds the gloss of the worn layer only: used as the glass gloss, the
         Constellation canopy (``glass_canopy_gloss``, ~0.5) rendered as
-        frosted glass while it is authored clear.
+        frosted glass while it is authored clear. The tint keeps its authored hue (``GLASS_TINT_HUE``).
         """
-        if group.get("starbreaker_glass_lightpath_patch_version") == 5:
+        if group.get("starbreaker_glass_lightpath_patch_version") == 6:
             return
         for socket_name, default in (("Param_RefractionGloss", 1.0), ("Param_WearBlendBase", 0.0)):
             existing = next(
@@ -752,7 +783,7 @@ class BuildersMixin:
         hue_saturation = nodes.new("ShaderNodeHueSaturation")
         hue_saturation.name = "Hue/Saturation/Value"
         hue_saturation.location = (777.0719604492188, -579.3798828125)
-        hue_saturation.inputs["Hue"].default_value = 0.57
+        hue_saturation.inputs["Hue"].default_value = GLASS_TINT_HUE
         hue_saturation.inputs["Saturation"].default_value = 1.0
         hue_saturation.inputs["Value"].default_value = 1.0
         hue_saturation.inputs["Factor"].default_value = 1.0
@@ -807,7 +838,7 @@ class BuildersMixin:
         links.new(_output_socket(hue_saturation, "Color") or hue_saturation.outputs[0], _input_socket(principled, "Base Color"))
         links.new(_output_socket(normal_map, "Normal") or normal_map.outputs[0], _input_socket(principled, "Normal"))
         group["starbreaker_glass_lightpath_patched"] = 1
-        group["starbreaker_glass_lightpath_patch_version"] = 5
+        group["starbreaker_glass_lightpath_patch_version"] = 6
 
     @staticmethod
     def _patch_mesh_decal_template_emission(group: bpy.types.ShaderNodeTree) -> None:
@@ -1190,6 +1221,8 @@ class BuildersMixin:
                         # into opaque black rectangles, and the Greatsword's pom_decals
                         # (1e-4) left its receiver plates see-through.
                         resolved = 1.0
+                    if param_key == "refractiongloss" and isinstance(resolved, (int, float)):
+                        resolved = glass_refraction_gloss(float(resolved))
                     if param_key == "damageperobjectwear":
                         # The authored value scales the object's wear state,
                         # which is 0 on a new item. Taken as the wear itself it
@@ -1284,6 +1317,8 @@ class BuildersMixin:
                     x=-220,
                     y=y,
                 )
+                if source_socket is not None and semantic == "base_color":
+                    source_socket = self._monitor_tinted(nodes, links, submaterial, source_socket, x=-40, y=y)
                 if source_socket is not None:
                     source_socket = self._scaled_mesh_decal_source(
                         nodes,
@@ -1348,6 +1383,8 @@ class BuildersMixin:
             emissive_color_path = emissive_texture_path or representative_textures(submaterial).get("base_color")
             emissive_color_node = self._image_node(nodes, emissive_color_path, x=-220, y=y, is_color=True)
             emissive_color_output = emissive_color_node.outputs[0] if emissive_color_node is not None else None
+            if emissive_color_output is not None:
+                emissive_color_output = self._monitor_tinted(nodes, links, submaterial, emissive_color_output, x=-40, y=y)
             if emissive_color_output is None and emissive_triplet is not None:
                 emissive_color_output = self._value_color_socket(
                     nodes,
@@ -1365,6 +1402,21 @@ class BuildersMixin:
                 links.new(surface_shader, add_shader.inputs[0])
                 links.new(emission.outputs[0], add_shader.inputs[1])
                 surface_shader = add_shader.outputs[0]
+
+        # A Monitor is a glossy screen, not only light: its Specular reflects (the Dark Bear's eyeballs are silver
+        # around the glowing pupils; emission and transparency alone drew them black).
+        monitor_reflect = monitor_specular(submaterial)
+        if monitor_reflect is not None:
+            glossy = nodes.new("ShaderNodeBsdfGlossy")
+            glossy.label = "Monitor Surface"
+            glossy.location = (400, -460)
+            glossy.inputs["Color"].default_value = (*monitor_reflect, 1.0)
+            glossy.inputs["Roughness"].default_value = MONITOR_ROUGHNESS
+            add_glossy = nodes.new("ShaderNodeAddShader")
+            add_glossy.location = (720, -40)
+            links.new(surface_shader, add_glossy.inputs[0])
+            links.new(glossy.outputs[0], add_glossy.inputs[1])
+            surface_shader = add_glossy.outputs[0]
 
         # Mesh decals float up to a few cm over the hull (the F8C's livery
         # stripes sit 2 cm up); in game they are blended into the surface and
@@ -2622,12 +2674,25 @@ class BuildersMixin:
         # fed is swept once these links replace it.
         blend_outputs = self._layer_blend_sockets(nodes, links, submaterial, palette, x=-280, y=1400)
         if blend_outputs is not None:
-            color_output, roughness_output, metallic_output = blend_outputs
+            color_output, roughness_output, metallic_output, glow_mask = blend_outputs
             for name, socket in (("Base Color", color_output), ("Roughness", roughness_output),
                                  ("Metallic", metallic_output)):
                 target = _input_socket(principled_group, name)
                 if target is not None:
                     links.new(socket, target)
+            # The glowing slots emit at `Glow` (as the contract groups without an
+            # emission input do), only where they lie, in `layer_blend_glow_color`.
+            emissive = layer_blend_glow_color(submaterial)
+            color_target = _input_socket(principled_group, "Emission Color")
+            strength_target = _input_socket(principled_group, "Emission Strength")
+            if glow_mask is not None and emissive is not None and color_target is not None and strength_target is not None:
+                color_target.default_value = (*emissive, 1.0)
+                strength = nodes.new("ShaderNodeMath")
+                strength.operation = "MULTIPLY"
+                strength.location = (100, 400)
+                strength.inputs[1].default_value = _contract_emission_strength(submaterial)
+                links.new(glow_mask, strength.inputs[0])
+                links.new(strength.outputs[0], strength_target)
 
         # The decal sheet, then the parallax occlusion decals, over the layers,
         # each read through the second UV set.
@@ -2721,9 +2786,10 @@ class BuildersMixin:
         *,
         x: int,
         y: int,
-    ) -> tuple[Any, Any, Any] | None:
+    ) -> tuple[Any, Any, Any, Any] | None:
         """Colour, roughness and metallic of a LayerBlend_V2 material whose
-        base layers are chosen by a blend map (TexSlot12), or None.
+        base layers are chosen by a blend map (TexSlot12), plus the mask of
+        its glowing slots (`layer_blend_glow_slots`, None without), or None.
 
         The layered-wear path reads only the first layer plus one more: the
         ADP-mk4 helmet's olive paint is its third base layer and never showed,
@@ -2732,14 +2798,8 @@ class BuildersMixin:
         pristine, and the ORC-mkX core's white wear metal covered 40% of it.
         With a single base layer the material has nothing to blend.
         """
-        # Slots by the number in the name: manifests skip some (the Zeus
-        # helmet shell has BaseLayer2-4, its visor 3 and 4 only).
-        numbered: dict[int, LayerManifestEntry] = {}
-        for layer in submaterial.layer_manifest:
-            name = (layer.name or "").lower()
-            if name.startswith("baselayer") and name[9:].isdigit() and 1 <= int(name[9:]) <= 4:
-                numbered.setdefault(int(name[9:]), layer)
-        if len(numbered) < 2:
+        slots = layer_blend_slots(submaterial)
+        if not slots:
             return None
         blend_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot12",), roles=("blend_mask",))
         blend_node = self._image_node(
@@ -2803,13 +2863,7 @@ class BuildersMixin:
             blend_color = join.outputs[0]
         links.new(blend_color, _input_socket(group, "Blend Color"))
 
-        # An empty slot takes the layer underneath it (slot 4, at the bottom,
-        # the highest one there is), so its channel changes nothing.
-        slots: dict[int, LayerManifestEntry] = {}
-        below = numbered[max(numbered)]
-        for index in (4, 3, 2, 1):
-            below = slots[index] = numbered.get(index, below)
-        for index, layer in sorted(slots.items()):
+        for index, layer in slots.items():
             prefix = "Layer%d " % index
             ly = y - index * 400
             tiling = float(layer.uv_tiling or 1.0)
@@ -2840,10 +2894,27 @@ class BuildersMixin:
                     self._set_socket_default(_input_socket(group, prefix + "Smoothness"), min(1.0, shininess / 255.0))
             self._set_socket_default(_input_socket(group, prefix + "Gloss"), float(layer.gloss_mult if layer.gloss_mult is not None else 1.0))
             self._set_socket_default(_input_socket(group, prefix + "Metallic"), _layer_snapshot_float(layer, "metallic"))
+
+        # Where the glowing slots lie: the same stack over white for them and
+        # black for the rest, so the mask follows the blend exactly.
+        glow_mask = None
+        glow_slots = layer_blend_glow_slots(submaterial)
+        if glow_slots:
+            mask = nodes.new("ShaderNodeGroup")
+            mask.node_tree = group.node_tree
+            _refresh_group_node_sockets(mask)
+            mask.location = (x + 200, y - 1800)
+            mask.label = "StarBreaker LayerBlend Glow Mask"
+            links.new(blend_color, _input_socket(mask, "Blend Color"))
+            for index in slots:
+                shade = 1.0 if index in glow_slots else 0.0
+                self._set_socket_default(_input_socket(mask, "Layer%d Image" % index), (shade, shade, shade, 1.0))
+            glow_mask = _output_socket(mask, "Color")
         return (
             _output_socket(group, "Color"),
             _output_socket(group, "Roughness"),
             _output_socket(group, "Metallic"),
+            glow_mask,
         )
 
     def _layer_blend_decal_sockets(

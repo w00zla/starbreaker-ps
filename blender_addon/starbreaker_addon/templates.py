@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
-from .manifest import PaletteChannel, SubmaterialRecord, TextureReference
+from .manifest import LayerManifestEntry, PaletteChannel, SubmaterialRecord, TextureReference
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,12 @@ ROUGHNESS_ROLES = ("roughness",)
 MASK_ROLES = ("wear_mask", "pattern_mask", "stencil", "tint_palette_decal", "hal_control")
 HEIGHT_ROLES = ("height",)
 OPACITY_ROLES = ("opacity",)
+# Hue of the GlassPBR template's tint node; 0.5 leaves the tint as authored (0.57 turned every glass by +25°: the
+# Strata microTech's lime visor drew teal).
+GLASS_TINT_HUE = 0.5
+# Roughness of a Monitor's reflecting surface: the material authors no gloss; 0.35 matched the Dark Bear's silver
+# eyeballs in the inventory tile (0.15 mirror-like, 0.6 matt).
+MONITOR_ROUGHNESS = 0.35
 
 
 def active_submaterials(submaterials: list[SubmaterialRecord]) -> list[SubmaterialRecord]:
@@ -92,6 +99,18 @@ def _authored_float(submaterial: SubmaterialRecord, name: str) -> float | None:
             return float(attribute.get("value"))
         except (TypeError, ValueError):
             return None
+    return None
+
+
+def _authored_triplet(submaterial: SubmaterialRecord, name: str) -> tuple[float, float, float] | None:
+    for attribute in submaterial.raw.get("authored_attributes", []):
+        if attribute.get("name") != name:
+            continue
+        try:
+            values = tuple(float(v) for v in str(attribute.get("value")).split(","))
+        except ValueError:
+            return None
+        return values[:3] if len(values) >= 3 else None  # type: ignore[return-value]
     return None
 
 
@@ -195,7 +214,9 @@ def _base_template_plan(submaterial: SubmaterialRecord) -> MaterialTemplatePlan:
     if flags.has_parallax_occlusion_mapping:
         return MaterialTemplatePlan("parallax_pom", "Parallax Or POM", "BLEND", "NONE", True, True, False, False, True, True)
     if family in {"DisplayScreen", "Monitor", "UIPlane"}:
-        return MaterialTemplatePlan("screen_hud", "Screen Or HUD", "BLEND", "HASHED", True, False, False, False, True, True)
+        # Dithered, not blended: blended surfaces are invisible to Eevee's raytraced refraction (the Dark Bear's
+        # glowing pupils behind their frosted lenses drew as grey discs).
+        return MaterialTemplatePlan("screen_hud", "Screen Or HUD", "HASHED", "HASHED", True, False, False, False, True, True)
     if family in {"HumanSkin_V2", "Eye", "Organic"}:
         return MaterialTemplatePlan("biological", "Biological", "OPAQUE", "OPAQUE", True, True, False, False, False, False)
     if family == "HairPBR":
@@ -331,6 +352,84 @@ def layer_blend_decal_sheet(submaterial: SubmaterialRecord) -> TextureReference 
     )
 
 
+def layer_blend_slots(submaterial: SubmaterialRecord) -> dict[int, LayerManifestEntry]:
+    """A LayerBlend_V2 material's base layers by slot (1-4), or {} with fewer
+    than two: nothing to blend.
+
+    Slots go by the number in the name, flat layers (no layer file, only a
+    tint) included: the Artimex Chairman's Club helmet's eye strip is face01_m's
+    BaseLayer1, red-orange, and drew the grey plastic of BaseLayer2 while the
+    exporter dropped it. An empty slot takes the layer underneath it (slot 4,
+    at the bottom, the highest one there is), so its channel changes nothing:
+    the Zeus helmet shell has BaseLayer2-4 only.
+    """
+    numbered: dict[int, LayerManifestEntry] = {}
+    for layer in [*submaterial.layer_manifest, *submaterial.flat_layers]:
+        name = (layer.name or "").lower()
+        if name.startswith("baselayer") and name[9:].isdigit() and 1 <= int(name[9:]) <= 4:
+            numbered.setdefault(int(name[9:]), layer)
+    if len(numbered) < 2:
+        return {}
+    slots: dict[int, LayerManifestEntry] = {}
+    below = numbered[max(numbered)]
+    for index in (4, 3, 2, 1):
+        below = slots[index] = numbered.get(index, below)
+    return dict(sorted(slots.items()))
+
+
+def layer_blend_glow_slots(submaterial: SubmaterialRecord) -> frozenset[int]:
+    """The slots of a LayerBlend_V2 material that glow: its flat layers, when
+    the material has an `Emissive` colour and a `Glow`.
+
+    The game lights the Chairman's Club's eye strip, the flat BaseLayer1 of
+    face01_m (`Emissive` orange, `Glow` 0.18), and nothing else of the face
+    plate: glowing the whole material turned the plate orange. The armour's
+    flat layers with a Glow are its lights (helmet_glow_m, shoulder_lights_m,
+    corelight_m, thetaring02_m).
+    """
+    if submaterial.shader_family != "LayerBlend_V2" or (_authored_float(submaterial, "Glow") or 0.0) <= 0.0:
+        return frozenset()
+    emissive = next(
+        (attribute.get("value") for attribute in submaterial.raw.get("authored_attributes", [])
+         if attribute.get("name") == "Emissive"),
+        None,
+    )
+    try:
+        if emissive is None or max(float(part) for part in str(emissive).split(",")) <= 0.0:
+            return frozenset()
+    except ValueError:
+        return frozenset()
+    return frozenset(index for index, layer in layer_blend_slots(submaterial).items() if layer.flat)
+
+
+def glass_refraction_gloss(value: float) -> float:
+    """A glass's `RefractionGloss`, 0 read as clear: the Dark Bear's eye lenses author 0 and look clear in game;
+    taken as frosted they hid the glowing pupils behind grey discs (15 of 791 character glasses author 0)."""
+    return 1.0 if value == 0.0 else value
+
+
+def layer_blend_glow_color(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
+    """The colour the glowing slots emit: the geometric mean of `Emissive` and the glowing layer's tint, the tint
+    scaled to Emissive's peak; Emissive alone when that layer has no tint, None when nothing glows.
+
+    Fitted, not derived (no shader source): the Chairman's Club's eye strip has Emissive orange (R/G 3.0) and a deep
+    red tint (R/G 19.7); the inventory tile shows R/G about 7, the mean gives it (210/84/33 sRGB against the tile's
+    196/79/39), Emissive alone drew it yellowish.
+    """
+    glow_slots = layer_blend_glow_slots(submaterial)
+    if not glow_slots:
+        return None
+    emissive = _authored_triplet(submaterial, "Emissive")
+    if emissive is None:
+        return None
+    slots = layer_blend_slots(submaterial)
+    tint = next((slots[index].tint_color for index in sorted(glow_slots) if slots[index].tint_color), None)
+    if tint is None or max(tint) <= 0.0:
+        return emissive
+    scale = max(emissive) / max(tint)
+    return tuple(math.sqrt(e * t * scale) for e, t in zip(emissive, tint))  # type: ignore[return-value]
+
+
 def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureReference | None:
     excluded = _pom_decal_paths(submaterial)
     for texture in _all_texture_candidates(submaterial):
@@ -341,6 +440,31 @@ def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureRefer
             if texture.alpha_semantic == "smoothness" and texture.export_path:
                 return texture
     return None
+
+
+def glass_tints_from_palette(submaterial: SubmaterialRecord) -> bool:
+    """GlassPBR takes the palette's glass colour only with ``%USE_TINT_PALETTE``; without it its own ``Diffuse``
+    tints it (ORC-mkX Singularity visor: near-black Diffuse, the palette's glass is white)."""
+    if submaterial.shader_family != "GlassPBR":
+        return True
+    return "USE_TINT_PALETTE" in submaterial.decoded_feature_flags.tokens
+
+
+def _monitor_attribute_triplet(submaterial: SubmaterialRecord, name: str) -> tuple[float, float, float] | None:
+    if submaterial.shader_family != "Monitor":
+        return None
+    return _authored_triplet(submaterial, name)
+
+
+def monitor_emission_tint(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
+    """A Monitor's texture glows tinted by its ``Diffuse`` (Dark Bear Grape: a white pupil dot, Diffuse purple)."""
+    return _monitor_attribute_triplet(submaterial, "Diffuse")
+
+
+def monitor_specular(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
+    """A Monitor's surface reflects with its ``Specular`` as F0 (Dark Bear eyeballs: 1,1,1, silver); None if black."""
+    specular = _monitor_attribute_triplet(submaterial, "Specular")
+    return specular if specular is not None and max(specular) > 0.0 else None
 
 
 def material_palette_channels(submaterial: SubmaterialRecord) -> list[PaletteChannel]:

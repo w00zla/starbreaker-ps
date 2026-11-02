@@ -42,6 +42,7 @@ from ...manifest import (
 from ...material_contract import ContractInput, ShaderGroupContract
 from ...templates import (
     alpha_test_threshold,
+    glass_tints_from_palette,
     material_palette_channels,
     representative_textures,
     smoothness_texture_reference,
@@ -723,9 +724,11 @@ class MaterialsMixin:
     ) -> Any:
         if contract_input.name.startswith("Palette_"):
             channel_name = contract_input.name.removeprefix("Palette_").lower()
-            if palette is None:
-                # No palette to tint the glass: its own Diffuse does. The
-                # Calico helmet's red eye lenses (0.08, 0, 0) drew clear.
+            if palette is None or (channel_name == "glass" and not glass_tints_from_palette(submaterial)):
+                # No palette to tint the glass, or the glass does not use it
+                # (no %USE_TINT_PALETTE): its own Diffuse does. The Calico
+                # helmet's red eye lenses (0.08, 0, 0) drew clear, the ORC-mkX
+                # Singularity's near-black visor took the palette's white glass.
                 if channel_name == "glass":
                     diffuse = _authored_attribute_triplet(submaterial, "Diffuse")
                     if diffuse:
