@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import json
+import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 JsonDict = dict[str, Any]
 Color3 = tuple[float, float, float]
@@ -12,6 +13,17 @@ Vec4 = tuple[float, float, float, float]
 Matrix4 = tuple[tuple[float, float, float, float], ...]
 
 _PACKAGE_BUNDLE_CACHE: dict[str, tuple[tuple[int, int, int], "PackageBundle"]] = {}
+# Case-insensitive path indexes by export root, shared by the bundles of one process. ``None`` (the default)
+# keeps one index per bundle, as the interactive add-on does; a batch renderer opts in with
+# ``share_path_indexes()``. A shared index is only a starting point: a bundle that takes one rescans the
+# root once when a lookup misses (files exported since) and checks every hit still exists.
+_SHARED_PATH_INDEXES: dict[str, dict[str, Path]] | None = None
+
+
+def share_path_indexes(enabled: bool = True) -> None:
+    """Share the path index of an export root between bundles (``False`` drops them again)."""
+    global _SHARED_PATH_INDEXES
+    _SHARED_PATH_INDEXES = {} if enabled else None
 
 
 def _load_json(path: Path) -> JsonDict:
@@ -783,6 +795,8 @@ class PackageBundle:
     paints: dict[str, PaintVariantRecord]
     _material_cache: dict[str, tuple[int, MaterialSidecar]] = field(default_factory=dict, repr=False)
     _path_index: dict[str, Path] | None = field(default=None, repr=False)
+    # True while ``_path_index`` was scanned by this bundle itself (not taken from the shared indexes).
+    _path_index_fresh: bool = field(default=False, repr=False)
 
     @classmethod
     def load(cls, scene_path: str | Path) -> PackageBundle:
@@ -843,13 +857,24 @@ class PackageBundle:
         # Every candidate as written first; the case-insensitive index (an rglob over the whole
         # export root) only when none exists: building it up front cost ~0.1 s per opened package.
         candidates = _candidate_relative_paths(relative_path)
+        if not candidates:
+            return None
         for candidate in candidates:
             direct = self.export_root / Path(candidate)
             if direct.exists():
                 return direct
+        resolved = self._lookup_path_index(candidates)
+        if resolved is None and not self._path_index_fresh:
+            # An index taken from the shared ones may predate files exported since: scan once more.
+            self._scan_path_index()
+            resolved = self._lookup_path_index(candidates)
+        return resolved
+
+    def _lookup_path_index(self, candidates: list[str]) -> Path | None:
+        index = self._build_path_index()
         for candidate in candidates:
-            resolved = self._build_path_index().get(candidate.lower())
-            if resolved is not None:
+            resolved = index.get(candidate.lower())
+            if resolved is not None and (self._path_index_fresh or resolved.exists()):
                 return resolved
         return None
 
@@ -871,13 +896,60 @@ class PackageBundle:
     def _build_path_index(self) -> dict[str, Path]:
         if self._path_index is not None:
             return self._path_index
-        self._path_index = {}
-        for candidate in self.export_root.rglob("*"):
-            if not candidate.is_file():
+        if _SHARED_PATH_INDEXES is not None:
+            shared = _SHARED_PATH_INDEXES.get(os.path.normcase(str(self.export_root)))
+            if shared is not None:
+                self._path_index = shared
+                return shared
+        return self._scan_path_index()
+
+    def _scan_path_index(self) -> dict[str, Path]:
+        index: dict[str, Path] = {}
+        base = os.path.join(str(self.export_root), "")
+        for entry in _scan_tree_like_rglob(base):
+            try:
+                if not entry.is_file():
+                    continue
+            except OSError:
                 continue
-            relative = candidate.relative_to(self.export_root).as_posix().lower()
-            self._path_index.setdefault(relative, candidate)
-        return self._path_index
+            relative = entry.path[len(base):].replace(os.sep, "/").lower()
+            if relative not in index:
+                index[relative] = Path(entry.path)
+        self._path_index = index
+        self._path_index_fresh = True
+        if _SHARED_PATH_INDEXES is not None:
+            _SHARED_PATH_INDEXES[os.path.normcase(str(self.export_root))] = index
+        return index
+
+
+def _scan_dir(path: str) -> list[os.DirEntry[str]]:
+    try:
+        with os.scandir(path) as entries:
+            return list(entries)
+    except OSError:
+        return []
+
+
+def _scan_tree_like_rglob(base: str) -> Iterator[os.DirEntry[str]]:
+    """Yield every entry below ``base`` in the order of ``Path(base).rglob("*")``.
+
+    The same walk on ``os.DirEntry`` strings, each directory listed once (rglob
+    lists every directory twice and builds a ``Path`` per entry): a tenth of the
+    time on a large export root. Directory symlinks are not descended, as in rglob.
+    """
+    top = _scan_dir(base)
+    yield from top
+    stack = [top]
+    while stack:
+        for entry in stack.pop():
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                is_dir = False
+            if is_dir:
+                children = _scan_dir(entry.path)
+                yield from children
+                stack.append(children)
 
 
 def _package_bundle_manifest_signature(scene_path: Path) -> tuple[int, int, int, int]:

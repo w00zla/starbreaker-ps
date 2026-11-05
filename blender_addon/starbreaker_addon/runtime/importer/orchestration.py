@@ -212,23 +212,30 @@ class OrchestrationMixin:
     def _ensure_runtime_shared_groups(self) -> None:
         if self.runtime_shared_groups_ready:
             return
-        self._ensure_runtime_layer_surface_group()
-        self._ensure_runtime_hard_surface_group()
-        self._ensure_runtime_illum_group()
-        self._ensure_runtime_wear_input_group()
-        self._ensure_runtime_iridescence_input_group()
-        self._ensure_runtime_nodraw_group()
-        self._ensure_runtime_glass_group()
-        self._ensure_runtime_screen_group()
-        self._ensure_runtime_effect_group()
-        self._ensure_runtime_layered_inputs_group()
-        self._ensure_runtime_principled_group()
-        self._ensure_runtime_hardsurface_stencil_group()
-        self._ensure_runtime_channel_split_group()
-        self._ensure_runtime_smoothness_roughness_group()
-        self._ensure_runtime_color_to_luma_group()
-        self._ensure_runtime_specular_map_luma_group()
-        self._ensure_runtime_shadowless_wrapper_group()
+        # Only the groups already in the file are brought up to date here (an outdated one may still
+        # feed materials this refresh does not rebuild). A missing group is built where a material
+        # first uses it; building all of them up front cost ~50 ms per opened fresh export, whose
+        # unused groups the orphan purge then removed again.
+        node_groups = bpy.data.node_groups
+        for group_name, ensure_group in (
+            ("StarBreaker Runtime LayerSurface", self._ensure_runtime_layer_surface_group),
+            ("StarBreaker Runtime HardSurface", self._ensure_runtime_hard_surface_group),
+            ("StarBreaker Runtime Illum", self._ensure_runtime_illum_group),
+            ("StarBreaker Wear Input", self._ensure_runtime_wear_input_group),
+            ("StarBreaker Iridescence Input", self._ensure_runtime_iridescence_input_group),
+            ("StarBreaker Runtime NoDraw", self._ensure_runtime_nodraw_group),
+            ("StarBreaker Runtime Glass", self._ensure_runtime_glass_group),
+            ("StarBreaker Runtime Screen", self._ensure_runtime_screen_group),
+            ("StarBreaker Runtime Effect", self._ensure_runtime_effect_group),
+            ("StarBreaker Runtime LayeredInputs", self._ensure_runtime_layered_inputs_group),
+            ("StarBreaker Runtime Principled", self._ensure_runtime_principled_group),
+            ("StarBreaker Runtime Channel Split", self._ensure_runtime_channel_split_group),
+            ("StarBreaker Runtime Color To Luma", self._ensure_runtime_color_to_luma_group),
+            ("StarBreaker Runtime Specular Map Luma", self._ensure_runtime_specular_map_luma_group),
+            ("StarBreaker Runtime Shadowless Wrapper", self._ensure_runtime_shadowless_wrapper_group),
+        ):
+            if node_groups.get(group_name) is not None:
+                ensure_group()
         self.runtime_shared_groups_ready = True
 
     def _ensure_material_identity_index(self) -> None:

@@ -470,7 +470,12 @@ pub enum EntityCommand {
     /// Prints one JSON line per job (ok, package, worn, seconds, error)
     ExportBatch {
         /// JSON job list: [{"name": "<exact class name>", "output": "<root>", "worn": bool}]
-        jobs: PathBuf,
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        jobs: Option<PathBuf>,
+        /// Stay alive and read requests from stdin, one JSON object per line:
+        /// a job, {"end_chunk": "<root>"} or {"quit": true}; prints {"ready": true} once loaded
+        #[arg(long)]
+        stdin: bool,
         /// Path to Data.p4k
         #[arg(long, env = "SC_DATA_P4K")]
         p4k: Option<PathBuf>,
@@ -504,7 +509,7 @@ impl EntityCommand {
             } => export(name, output, p4k, dump_hierarchy, opts),
             Self::Loadout { name, p4k } => loadout(name, p4k),
             Self::Validate { output } => validate(output),
-            Self::ExportBatch { jobs, p4k, icon_files, opts } => {
+            Self::ExportBatch { jobs, stdin: _, p4k, icon_files, opts } => {
                 crate::entity_batch::export_batch(jobs, p4k, icon_files, opts)
             }
         }

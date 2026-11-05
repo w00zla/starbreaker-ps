@@ -1128,7 +1128,7 @@ pub(crate) fn load_diffuse_texture(
         p4k,
         base_path: p4k_dds_path,
     };
-    let dds = DdsFile::from_split(&base_bytes, &sibling_reader).ok()?;
+    let dds = DdsFile::from_split_min_mip(&base_bytes, &sibling_reader, mip_level as usize).ok()?;
 
     // Use requested mip level, clamped to available levels
     let mip = (mip_level as usize).min(dds.mip_count().saturating_sub(1));
@@ -1172,7 +1172,7 @@ pub(crate) fn load_normal_texture(
         p4k,
         base_path: p4k_dds_path,
     };
-    let dds = DdsFile::from_split(&base_bytes, &sibling_reader).ok()?;
+    let dds = DdsFile::from_split_min_mip(&base_bytes, &sibling_reader, mip_level as usize).ok()?;
 
     let format =
         starbreaker_dds::resolve_format(&dds.header.pixel_format, dds.dxt10_header.as_ref());
@@ -1235,7 +1235,7 @@ pub(crate) fn load_roughness_texture_result(
         p4k,
         base_path: p4k_path,
     };
-    let dds = DdsFile::from_split(&base_bytes, &sibling_reader)
+    let dds = DdsFile::from_split_min_mip(&base_bytes, &sibling_reader, mip_level as usize)
         .map_err(|_| RoughnessTextureLoadError::InvalidDds)?;
 
     if !dds.has_alpha_mips() {

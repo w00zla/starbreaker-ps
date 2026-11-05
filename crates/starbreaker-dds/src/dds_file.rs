@@ -135,6 +135,31 @@ impl DdsFile {
     /// `base_data` is the content of the `.dds` file (header + smallest mip data).
     /// `reader` provides access to sibling files (`.1`, `.2`, ..., `.7`, `.a`, `.1a`, etc.).
     pub fn from_split(base_data: &[u8], reader: &dyn ReadSibling) -> Result<Self, DdsError> {
+        Self::from_split_min_mip(base_data, reader, 0)
+    }
+
+    /// Like [`Self::from_split`], but only reads the split files that hold
+    /// `min_mip` and smaller levels.
+    ///
+    /// CryEngine split layout: the numbered siblings `.8` ... `.1` that exist,
+    /// taken from the highest number down, hold one level each (all faces of a
+    /// cubemap) from mip 0 on; the base file holds the remaining smaller levels.
+    /// So with `k` numbered siblings, `.k` is mip 0 and `.1` is mip `k - 1`.
+    /// Alpha siblings `.8a` ... `.1a` follow the same rule, `.a` holds the
+    /// remaining alpha levels. Which siblings exist (and the size of the largest,
+    /// which gives the face count) comes from [`ReadSibling::sibling_size`], so
+    /// skipped files are never read.
+    ///
+    /// Levels below `min(min_mip, last color level, last alpha level)` are left
+    /// as empty buffers: decoding `min_mip` clamped to the color and/or alpha
+    /// levels present works as with [`Self::from_split`], smaller indices do not,
+    /// nor does [`Self::to_dds`]. `mip_count()` and the alpha mip count are the
+    /// same as with [`Self::from_split`].
+    pub fn from_split_min_mip(
+        base_data: &[u8],
+        reader: &dyn ReadSibling,
+        min_mip: usize,
+    ) -> Result<Self, DdsError> {
         let mut r = SpanReader::new(base_data);
 
         // Read and validate magic
@@ -174,19 +199,14 @@ impl DdsFile {
         // Probe for sibling split files: .8, .7, .6, ..., .1
         // These are ordered from largest mip to smallest. The highest-numbered
         // existing file corresponds to mip 0 (full resolution).
-        let mut sibling_data: Vec<Vec<u8>> = Vec::new();
-        for n in (1..=8).rev() {
-            let suffix = format!(".{n}");
-            if let Some(data) = reader.read_sibling(&suffix) {
-                sibling_data.push(data);
-            }
-        }
+        let read_all = min_mip == 0;
+        let siblings = probe_numbered_siblings(reader, "", read_all);
 
         // Determine face count from the largest split file
-        let faces = if !sibling_data.is_empty() && !mip_sizes.is_empty() {
+        let faces = if !siblings.is_empty() && !mip_sizes.is_empty() {
             let largest_mip_size = mip_sizes[0];
-            if largest_mip_size > 0 && sibling_data[0].len().is_multiple_of(largest_mip_size) {
-                sibling_data[0].len() / largest_mip_size
+            if largest_mip_size > 0 && siblings[0].len.is_multiple_of(largest_mip_size) {
+                siblings[0].len / largest_mip_size
             } else {
                 1
             }
@@ -194,65 +214,48 @@ impl DdsFile {
             face_count(&header, dxt10_header.as_ref())
         };
 
-        // Assemble mip data: sibling files first (largest to smallest), then base file mips
-        let num_sibling_mips = sibling_data.len();
-        let mut mip_data = Vec::with_capacity(mip_count);
+        // Mips from the base file, after those in the sibling files
+        let num_sibling_mips = siblings.len();
+        let mut base_mips = Vec::with_capacity(mip_count);
 
         if faces <= 1 {
             // Simple case: no cubemap
-            // Sibling files each contain one mip level
-            for sib in &sibling_data {
-                mip_data.push(sib.clone());
-            }
-
-            // Remaining mips from the base file
             let mut offset = 0;
             for &size in mip_sizes.iter().skip(num_sibling_mips) {
                 if offset + size > small_mip_bytes.len() {
                     break;
                 }
-                mip_data.push(small_mip_bytes[offset..offset + size].to_vec());
+                base_mips.push(small_mip_bytes[offset..offset + size].to_vec());
                 offset += size;
             }
         } else {
             // Cubemap case: each sibling file contains data for ALL faces at that mip level.
-            for sib in &sibling_data {
-                mip_data.push(sib.clone());
-            }
-
             let mut offset = 0;
             for &per_face_size in mip_sizes.iter().skip(num_sibling_mips) {
                 let total_size = per_face_size * faces;
                 if offset + total_size > small_mip_bytes.len() {
                     // Try without face multiplier as fallback
                     if offset + per_face_size <= small_mip_bytes.len() {
-                        mip_data.push(small_mip_bytes[offset..offset + per_face_size].to_vec());
+                        base_mips.push(small_mip_bytes[offset..offset + per_face_size].to_vec());
                         offset += per_face_size;
                     } else {
                         break;
                     }
                 } else {
-                    mip_data.push(small_mip_bytes[offset..offset + total_size].to_vec());
+                    base_mips.push(small_mip_bytes[offset..offset + total_size].to_vec());
                     offset += total_size;
                 }
             }
         }
 
-        // Probe for alpha sibling files: .7a, .6a, ..., .1a, then .a
-        let mut alpha_mip_data: Vec<Vec<u8>> = Vec::new();
-        let mut alpha_mip_formats: Vec<Option<AlphaMipFormat>> = Vec::new();
-        let mut alpha_mip_layouts: Vec<AlphaMipLayout> = Vec::new();
+        // Probe for alpha sibling files: .8a, .7a, ..., .1a, then .a
+        let alpha_siblings = probe_numbered_siblings(reader, "a", read_all);
+        let mut alpha_tail: Vec<Vec<u8>> = Vec::new();
+        let mut alpha_tail_formats: Vec<Option<AlphaMipFormat>> = Vec::new();
+        let mut alpha_tail_layouts: Vec<AlphaMipLayout> = Vec::new();
         let mut alpha_mip_format = None;
-        for n in (1..=8).rev() {
-            let suffix = format!(".{n}a");
-            if let Some(data) = reader.read_sibling(&suffix) {
-                alpha_mip_data.push(data);
-                alpha_mip_formats.push(None);
-                alpha_mip_layouts.push(AlphaMipLayout::NumberedSibling);
-            }
-        }
         if let Some(data) = reader.read_sibling(".a") {
-            let numbered_alpha_mips = alpha_mip_data.len();
+            let numbered_alpha_mips = alpha_siblings.len();
             let tail_mips = parse_alpha_tail_mips(
                 &data,
                 numbered_alpha_mips,
@@ -269,32 +272,61 @@ impl DdsFile {
                     header.height,
                 );
                 if raw_tail_mips.mips.is_empty() {
-                    alpha_mip_data.push(data);
-                    alpha_mip_formats.push(None);
-                    alpha_mip_layouts.push(AlphaMipLayout::RawSinglePayload);
+                    alpha_tail.push(data);
+                    alpha_tail_formats.push(None);
+                    alpha_tail_layouts.push(AlphaMipLayout::RawSinglePayload);
                 } else {
                     alpha_mip_format = raw_tail_mips.format;
-                    alpha_mip_formats.extend(std::iter::repeat_n(
+                    alpha_tail_formats.extend(std::iter::repeat_n(
                         raw_tail_mips.format,
                         raw_tail_mips.mips.len(),
                     ));
-                    alpha_mip_layouts.extend(std::iter::repeat_n(
+                    alpha_tail_layouts.extend(std::iter::repeat_n(
                         AlphaMipLayout::RawTailSplit,
                         raw_tail_mips.mips.len(),
                     ));
-                    alpha_mip_data.extend(raw_tail_mips.mips);
+                    alpha_tail.extend(raw_tail_mips.mips);
                 }
             } else {
                 alpha_mip_format = tail_mips.format;
-                alpha_mip_formats
+                alpha_tail_formats
                     .extend(std::iter::repeat_n(tail_mips.format, tail_mips.mips.len()));
-                alpha_mip_layouts.extend(std::iter::repeat_n(
+                alpha_tail_layouts.extend(std::iter::repeat_n(
                     AlphaMipLayout::HeaderedTail,
                     tail_mips.mips.len(),
                 ));
-                alpha_mip_data.extend(tail_mips.mips);
+                alpha_tail.extend(tail_mips.mips);
             }
         }
+
+        // The smallest level a caller can end up decoding: min_mip, clamped to
+        // the last color level and, when there are alpha levels, the last alpha one.
+        let color_levels = siblings.len() + base_mips.len();
+        let alpha_levels = alpha_siblings.len() + alpha_tail.len();
+        let mut first_needed = min_mip.min(color_levels.saturating_sub(1));
+        if alpha_levels > 0 {
+            first_needed = first_needed.min(alpha_levels - 1);
+        }
+
+        let num_alpha_siblings = alpha_siblings.len();
+        let (Some(sibling_mips), Some(alpha_sibling_mips)) = (
+            load_numbered_siblings(reader, siblings, first_needed),
+            load_numbered_siblings(reader, alpha_siblings, first_needed),
+        ) else {
+            // A sibling that exists could not be read: the full read treats it as
+            // missing, which shifts the levels, so take that path.
+            return Self::from_split_min_mip(base_data, reader, 0);
+        };
+
+        let mut mip_data = sibling_mips;
+        mip_data.extend(base_mips);
+
+        let mut alpha_mip_data = alpha_sibling_mips;
+        alpha_mip_data.extend(alpha_tail);
+        let mut alpha_mip_formats = vec![None; num_alpha_siblings];
+        alpha_mip_formats.extend(alpha_tail_formats);
+        let mut alpha_mip_layouts = vec![AlphaMipLayout::NumberedSibling; num_alpha_siblings];
+        alpha_mip_layouts.extend(alpha_tail_layouts);
 
         Ok(Self {
             header,
@@ -558,6 +590,60 @@ fn face_count(header: &DdsHeader, dxt10: Option<&DdsHeaderDxt10>) -> usize {
     }
 }
 
+/// A numbered split file (`.N` or `.Na`) that exists next to the base file.
+struct SplitSibling {
+    suffix: String,
+    len: usize,
+    /// Its bytes when already read.
+    data: Option<Vec<u8>>,
+}
+
+/// The numbered siblings `.8{tag}` ... `.1{tag}` that exist, largest mip first:
+/// read now when `read_now`, else only sized (read later if needed).
+fn probe_numbered_siblings(reader: &dyn ReadSibling, tag: &str, read_now: bool) -> Vec<SplitSibling> {
+    (1..=8)
+        .rev()
+        .filter_map(|n| {
+            let suffix = format!(".{n}{tag}");
+            if read_now {
+                let data = reader.read_sibling(&suffix)?;
+                Some(SplitSibling {
+                    suffix,
+                    len: data.len(),
+                    data: Some(data),
+                })
+            } else {
+                let len = reader.sibling_size(&suffix)?;
+                Some(SplitSibling {
+                    suffix,
+                    len,
+                    data: None,
+                })
+            }
+        })
+        .collect()
+}
+
+/// The siblings' mip data, levels below `first_needed` left empty (unread).
+/// `None` when a needed sibling cannot be read or its size changed.
+fn load_numbered_siblings(
+    reader: &dyn ReadSibling,
+    siblings: Vec<SplitSibling>,
+    first_needed: usize,
+) -> Option<Vec<Vec<u8>>> {
+    siblings
+        .into_iter()
+        .enumerate()
+        .map(|(level, sibling)| match sibling.data {
+            Some(data) => Some(data),
+            None if level < first_needed => Some(Vec::new()),
+            None => reader
+                .read_sibling(&sibling.suffix)
+                .filter(|data| data.len() == sibling.len),
+        })
+        .collect()
+}
+
 /// Resolve the DXGI format from the DDS headers.
 pub fn resolve_format(
     pf: &DdsPixelFormat,
@@ -738,5 +824,279 @@ fn dxgi_uncompressed_bpp(dxgi_format: u32) -> Option<usize> {
         28 | 29 => Some(4), // R8G8B8A8_UNORM / SRGB
         87 | 91 => Some(4), // B8G8R8A8_UNORM / SRGB
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// Siblings in memory that record which ones were read; `broken` exists
+    /// (has a size) but cannot be read.
+    struct RecordingSiblings {
+        files: HashMap<&'static str, Vec<u8>>,
+        broken: Option<&'static str>,
+        reads: RefCell<Vec<String>>,
+    }
+
+    impl RecordingSiblings {
+        fn new(files: Vec<(&'static str, Vec<u8>)>) -> Self {
+            Self {
+                files: files.into_iter().collect(),
+                broken: None,
+                reads: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn reads(&self) -> Vec<String> {
+            let mut reads = self.reads.borrow().clone();
+            reads.sort();
+            reads
+        }
+    }
+
+    impl ReadSibling for RecordingSiblings {
+        fn read_sibling(&self, suffix: &str) -> Option<Vec<u8>> {
+            self.reads.borrow_mut().push(suffix.to_string());
+            if self.broken == Some(suffix) {
+                return None;
+            }
+            self.files.get(suffix).cloned()
+        }
+
+        fn sibling_size(&self, suffix: &str) -> Option<usize> {
+            self.files.get(suffix).map(Vec::len)
+        }
+    }
+
+    fn header(width: u32, height: u32, mipmap_count: u32, cubemap_flags: u32) -> DdsHeader {
+        DdsHeader {
+            size: 124,
+            flags: 0x0002_1007,
+            height,
+            width,
+            pitch_or_linear_size: 0,
+            depth: 0,
+            mipmap_count,
+            reserved1: [0; 11],
+            pixel_format: DdsPixelFormat {
+                size: 32,
+                flags: 0x4,
+                four_cc: *b"DX10",
+                rgb_bit_count: 0,
+                r_bit_mask: 0,
+                g_bit_mask: 0,
+                b_bit_mask: 0,
+                a_bit_mask: 0,
+            },
+            surface_flags: 0x0040_1008,
+            cubemap_flags,
+            reserved2: [0; 3],
+        }
+    }
+
+    fn dx10(dxgi_format: u32, misc_flag: u32) -> DdsHeaderDxt10 {
+        DdsHeaderDxt10 {
+            dxgi_format,
+            resource_dimension: 3,
+            misc_flag,
+            array_size: 1,
+            misc_flags2: 0,
+        }
+    }
+
+    fn dds(magic: bool, header: DdsHeader, dxt10: DdsHeaderDxt10, payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if magic {
+            bytes.extend_from_slice(&DDS_MAGIC);
+        }
+        bytes.extend_from_slice(zerocopy::IntoBytes::as_bytes(&header));
+        bytes.extend_from_slice(zerocopy::IntoBytes::as_bytes(&dxt10));
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    /// A distinct fill per file so a level read from the wrong file shows.
+    fn fill(byte: u8, len: usize) -> Vec<u8> {
+        vec![byte; len]
+    }
+
+    /// The levels a partial parse must hold exactly as the full parse does.
+    fn assert_same_from(partial: &DdsFile, full: &DdsFile, first: usize) {
+        assert_eq!(partial.mip_count(), full.mip_count());
+        assert_eq!(partial.alpha_mip_data.len(), full.alpha_mip_data.len());
+        assert_eq!(partial.mip_data[first..], full.mip_data[first..]);
+        // Below it: unread siblings are empty, levels from the base file kept.
+        assert!(unread_or_same(&partial.mip_data[..first], &full.mip_data));
+        let alpha_first = first.min(full.alpha_mip_data.len());
+        assert_eq!(
+            partial.alpha_mip_data[alpha_first..],
+            full.alpha_mip_data[alpha_first..]
+        );
+        assert!(unread_or_same(
+            &partial.alpha_mip_data[..alpha_first],
+            &full.alpha_mip_data
+        ));
+        assert_eq!(partial.alpha_mip_formats, full.alpha_mip_formats);
+        assert_eq!(partial.alpha_mip_layouts, full.alpha_mip_layouts);
+        assert_eq!(partial.alpha_mip_format, full.alpha_mip_format);
+        for level in first..full.alpha_mip_data.len() {
+            assert_eq!(
+                partial.alpha_mip_format_for_mip(level),
+                full.alpha_mip_format_for_mip(level)
+            );
+        }
+    }
+
+    fn unread_or_same(partial: &[Vec<u8>], full: &[Vec<u8>]) -> bool {
+        partial
+            .iter()
+            .zip(full)
+            .all(|(partial, full)| partial.is_empty() || partial == full)
+    }
+
+    /// 16x16 BC5 with 5 levels (256, 64, 16, 16, 16 bytes): `.3` `.2` `.1`
+    /// hold mips 0-2, the base file mips 3-4.
+    fn color_only() -> (Vec<u8>, RecordingSiblings) {
+        let base = dds(true, header(16, 16, 5, 0), dx10(83, 0), &fill(0xB0, 16 + 16));
+        let siblings = RecordingSiblings::new(vec![
+            (".3", fill(0x30, 256)),
+            (".2", fill(0x20, 64)),
+            (".1", fill(0x10, 16)),
+        ]);
+        (base, siblings)
+    }
+
+    #[test]
+    fn min_mip_reads_only_the_siblings_from_that_level_on() {
+        let (base, siblings) = color_only();
+        let full = DdsFile::from_split(&base, &siblings).unwrap();
+        assert_eq!(
+            full.mip_data.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![256, 64, 16, 16, 16]
+        );
+
+        let siblings = color_only().1;
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 2).unwrap();
+        assert_eq!(siblings.reads(), vec![".1", ".a"]);
+        assert_same_from(&partial, &full, 2);
+        assert_eq!(partial.decode_rgba(2).unwrap(), full.decode_rgba(2).unwrap());
+
+        // Levels in the base file need no sibling at all.
+        let siblings = color_only().1;
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 3).unwrap();
+        assert_eq!(siblings.reads(), vec![".a"]);
+        assert_same_from(&partial, &full, 3);
+    }
+
+    #[test]
+    fn min_mip_past_the_last_level_keeps_the_last_level() {
+        let (base, siblings) = color_only();
+        let full = DdsFile::from_split(&base, &siblings).unwrap();
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 9).unwrap();
+        assert_same_from(&partial, &full, 4);
+    }
+
+    /// DDNA-like: 16x16 BC5 color as above plus BC4 alpha (128, 32, 8, 8, 8
+    /// bytes) in `.2a` `.1a` and a headered `.a` tail for mips 2-4.
+    fn with_alpha() -> (Vec<u8>, RecordingSiblings) {
+        let base = dds(true, header(16, 16, 5, 0), dx10(83, 0), &fill(0xB0, 16 + 16));
+        let alpha_tail = dds(false, header(16, 16, 5, 0), dx10(80, 0), &fill(0xA0, 8 + 8 + 8));
+        let siblings = RecordingSiblings::new(vec![
+            (".3", fill(0x30, 256)),
+            (".2", fill(0x20, 64)),
+            (".1", fill(0x10, 16)),
+            (".2a", fill(0x2A, 128)),
+            (".1a", fill(0x1A, 32)),
+            (".a", alpha_tail),
+        ]);
+        (base, siblings)
+    }
+
+    #[test]
+    fn min_mip_skips_the_large_alpha_siblings_too() {
+        let (base, siblings) = with_alpha();
+        let full = DdsFile::from_split(&base, &siblings).unwrap();
+        assert_eq!(
+            full.alpha_mip_data.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![128, 32, 8, 8, 8]
+        );
+
+        let siblings = with_alpha().1;
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 1).unwrap();
+        assert_eq!(siblings.reads(), vec![".1", ".1a", ".2", ".a"]);
+        assert_same_from(&partial, &full, 1);
+        assert_eq!(
+            partial.decode_alpha_mip(1).unwrap(),
+            full.decode_alpha_mip(1).unwrap()
+        );
+
+        let siblings = with_alpha().1;
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 2).unwrap();
+        assert_eq!(siblings.reads(), vec![".1", ".a"]);
+        assert_same_from(&partial, &full, 2);
+    }
+
+    #[test]
+    fn fewer_alpha_levels_clamp_the_first_level_read() {
+        // Alpha only in `.2a` `.1a` (no tail): a normal map's mip is clamped to
+        // alpha level 1, so color level 1 must be read even for min_mip 3.
+        let make = || {
+            RecordingSiblings::new(vec![
+                (".3", fill(0x30, 256)),
+                (".2", fill(0x20, 64)),
+                (".1", fill(0x10, 16)),
+                (".2a", fill(0x2A, 128)),
+                (".1a", fill(0x1A, 32)),
+            ])
+        };
+        let base = dds(true, header(16, 16, 5, 0), dx10(83, 0), &fill(0xB0, 16 + 16));
+        let full = DdsFile::from_split(&base, &make()).unwrap();
+        assert_eq!(full.alpha_mip_data.len(), 2);
+
+        let siblings = make();
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 3).unwrap();
+        assert_eq!(siblings.reads(), vec![".1", ".1a", ".2", ".a"]);
+        assert_same_from(&partial, &full, 1);
+    }
+
+    #[test]
+    fn cubemap_faces_come_from_the_largest_sibling_size_without_reading_it() {
+        // 8x8 BC1 cubemap, 4 levels (32, 8, 8, 8 bytes per face): `.2` `.1`
+        // hold mips 0-1 for all six faces, the base file mips 2-3.
+        let make = || {
+            RecordingSiblings::new(vec![
+                (".2", fill(0x20, 32 * 6)),
+                (".1", fill(0x10, 8 * 6)),
+            ])
+        };
+        let base = dds(
+            true,
+            header(8, 8, 4, 0xFE00),
+            dx10(71, 0x4),
+            &fill(0xB0, 8 * 6 * 2),
+        );
+        let full = DdsFile::from_split(&base, &make()).unwrap();
+        assert_eq!(
+            full.mip_data.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![32 * 6, 8 * 6, 8 * 6, 8 * 6]
+        );
+
+        let siblings = make();
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 1).unwrap();
+        assert_eq!(siblings.reads(), vec![".1", ".a"]);
+        assert_same_from(&partial, &full, 1);
+    }
+
+    #[test]
+    fn unreadable_sibling_falls_back_to_the_full_read() {
+        let (base, mut siblings) = color_only();
+        siblings.broken = Some(".1");
+        let full = DdsFile::from_split(&base, &siblings).unwrap();
+        let partial = DdsFile::from_split_min_mip(&base, &siblings, 2).unwrap();
+        assert_eq!(partial.mip_data, full.mip_data);
     }
 }

@@ -3576,12 +3576,32 @@ class BuildersMixin:
         polygons = getattr(data, "polygons", None) if data is not None else None
         if polygons is None:
             return counts
-        for poly in polygons:
-            idx = int(getattr(poly, "material_index", 0))
-            counts[idx] = counts.get(idx, 0) + 1
+        counts = self._polygon_counts_vectorised(polygons)
+        if counts is None:
+            counts = {}
+            for poly in polygons:
+                idx = int(getattr(poly, "material_index", 0))
+                counts[idx] = counts.get(idx, 0) + 1
         if cache is not None:
             cache[data_pointer] = counts
         return counts
+
+    @staticmethod
+    def _polygon_counts_vectorised(polygons: Any) -> dict[int, int] | None:
+        """Count polygons per material index with one ``foreach_get``; ``None`` where
+        the collection has none (the test suite's fake meshes) or it fails."""
+        foreach_get = getattr(polygons, "foreach_get", None)
+        if foreach_get is None:
+            return None
+        try:
+            import numpy as np
+
+            indices = np.empty(len(polygons), dtype=np.int32)
+            foreach_get("material_index", indices)
+            values, frequencies = np.unique(indices, return_counts=True)
+            return {int(value): int(frequency) for value, frequency in zip(values, frequencies)}
+        except Exception:
+            return None
 
     def _derive_decal_host_route_from_submaterials(
         self,

@@ -12,9 +12,19 @@
 //!   name, so variants sharing a geometry do not overwrite each other).
 //! - `--icon-files` leaves out what an icon render never reads: animation
 //!   clips and the weapon assembly diagnostics.
+//!
+//! `--stdin` instead of a job list keeps the process alive: after loading it
+//! prints `{"ready":true}` (or `{"ready":false,"error"}` and exits non-zero),
+//! then reads one JSON object per line: a job (one entry of the job list,
+//! answered with its result line), `{"end_chunk": "<output>"}` (forgets the
+//! assets written into that output root, answered with
+//! `{"chunk_done": "<output>"}`) or `{"quit": true}`. EOF ends it as well.
+//! A line that is not a valid request is answered with
+//! `{"ok": false, "error"}` (plus `name` when it has one). A panic in a job
+//! ends the process, as in batch mode.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -38,6 +48,18 @@ pub(crate) struct BatchJob {
     pub worn: bool,
 }
 
+/// Parse one job object `{name, output, worn?}`; the error says what is missing.
+fn parse_job(item: &serde_json::Value) -> std::result::Result<BatchJob, &'static str> {
+    let field = |key: &str| item.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let name = field("name").ok_or("has no name")?;
+    let output = field("output").ok_or("has no output")?;
+    Ok(BatchJob {
+        name: name.to_owned(),
+        output: PathBuf::from(output),
+        worn: item.get("worn").and_then(|v| v.as_bool()).unwrap_or(false),
+    })
+}
+
 /// Parse the job list: an array of `{name, output, worn?}` objects.
 pub(crate) fn parse_jobs(bytes: &[u8]) -> Result<Vec<BatchJob>> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
@@ -48,19 +70,86 @@ pub(crate) fn parse_jobs(bytes: &[u8]) -> Result<Vec<BatchJob>> {
     items
         .iter()
         .enumerate()
-        .map(|(index, item)| {
-            let field = |key: &str| item.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-            let name = field("name")
-                .ok_or_else(|| CliError::InvalidInput(format!("batch job {index} has no name")))?;
-            let output = field("output")
-                .ok_or_else(|| CliError::InvalidInput(format!("batch job {index} has no output")))?;
-            Ok(BatchJob {
-                name: name.to_owned(),
-                output: PathBuf::from(output),
-                worn: item.get("worn").and_then(|v| v.as_bool()).unwrap_or(false),
-            })
-        })
+        .map(|(index, item)| parse_job(item).map_err(|why| CliError::InvalidInput(format!("batch job {index} {why}"))))
         .collect()
+}
+
+/// One request line of `--stdin` mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Request {
+    Job(BatchJob),
+    /// The output root as sent (echoed back in `chunk_done`).
+    EndChunk(String),
+    Quit,
+}
+
+/// Parse a request line; the error is the result line to answer it with.
+pub(crate) fn parse_request(line: &str) -> std::result::Result<Request, serde_json::Value> {
+    let fail = |name: Option<&str>, error: String| {
+        let mut v = serde_json::json!({ "ok": false, "error": error, "seconds": 0.0 });
+        if let Some(name) = name {
+            v["name"] = name.into();
+        }
+        v
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(line).map_err(|e| fail(None, format!("request is not JSON: {e}")))?;
+    if !value.is_object() {
+        return Err(fail(None, "request must be a JSON object".into()));
+    }
+    if let Some(dir) = value.get("end_chunk") {
+        return match dir.as_str().filter(|s| !s.is_empty()) {
+            Some(dir) => Ok(Request::EndChunk(dir.to_owned())),
+            None => Err(fail(None, "end_chunk needs an output root".into())),
+        };
+    }
+    if value.get("quit").and_then(|v| v.as_bool()) == Some(true) {
+        return Ok(Request::Quit);
+    }
+    parse_job(&value).map(Request::Job).map_err(|why| {
+        let name = value.get("name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        fail(name, format!("batch job {why}"))
+    })
+}
+
+/// Write one protocol line to stdout (or a test buffer) and flush it.
+fn emit(out: &mut impl Write, line: &serde_json::Value) -> Result<()> {
+    writeln!(out, "{line}")
+        .and_then(|_| out.flush())
+        .map_err(|e| CliError::IoPath { source: e, path: "stdout".into() })
+}
+
+/// `--stdin` mode after loading: answer request lines until EOF or quit.
+/// `job` exports one job, given the assets written so far into its output root.
+fn serve(
+    input: impl BufRead,
+    out: &mut impl Write,
+    mut job: impl FnMut(&BatchJob, &mut HashSet<String>) -> serde_json::Value,
+) -> Result<()> {
+    // Reusable assets written so far, per output root (lower-case relative paths).
+    let mut written: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    for line in input.lines() {
+        let line = line.map_err(|e| CliError::IoPath { source: e, path: "stdin".into() })?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match parse_request(line) {
+            Ok(Request::Job(j)) => {
+                let result = job(&j, written.entry(j.output.clone()).or_default());
+                emit(out, &result)?;
+            }
+            Ok(Request::EndChunk(dir)) => {
+                // Batch mode has no step after its last job: the chunk only
+                // ends asset reuse for its root (and frees that memory).
+                written.remove(Path::new(&dir));
+                emit(out, &serde_json::json!({ "chunk_done": dir }))?;
+            }
+            Ok(Request::Quit) => break,
+            Err(answer) => emit(out, &answer)?,
+        }
+    }
+    Ok(())
 }
 
 /// Files an icon render never reads: the package's animation clips and the
@@ -82,26 +171,46 @@ fn entity_records_by_name<'a>(db: &'a Database) -> Result<HashMap<String, &'a Re
         .collect())
 }
 
-pub(crate) fn export_batch(jobs_path: PathBuf, p4k_path: Option<PathBuf>, icon_files: bool, opts: ExportOpts) -> Result<()> {
-    let jobs_bytes = std::fs::read(&jobs_path)
-        .map_err(|e| CliError::IoPath { source: e, path: jobs_path.display().to_string() })?;
-    let jobs = parse_jobs(&jobs_bytes)?;
+/// `--stdin` mode: a failed start is reported as `{"ready": false, "error"}`.
+fn started<T>(stdin: bool, result: Result<T>) -> Result<T> {
+    if stdin && let Err(e) = &result {
+        // Best effort: the process exits non-zero either way.
+        let _ = emit(&mut std::io::stdout().lock(), &serde_json::json!({ "ready": false, "error": e.to_string() }));
+    }
+    result
+}
 
-    let (p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), None)?;
-    let p4k = p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for entity export".into()))?;
-    let db = Database::from_bytes(&dcb_bytes)?;
+/// `jobs_path`: the JSON job list; `None` reads requests from stdin (`--stdin`).
+pub(crate) fn export_batch(
+    jobs_path: Option<PathBuf>,
+    p4k_path: Option<PathBuf>,
+    icon_files: bool,
+    opts: ExportOpts,
+) -> Result<()> {
+    let jobs = match &jobs_path {
+        Some(path) => {
+            let bytes = std::fs::read(path)
+                .map_err(|e| CliError::IoPath { source: e, path: path.display().to_string() })?;
+            Some(parse_jobs(&bytes)?)
+        }
+        None => None,
+    };
+    let stdin = jobs.is_none();
+
+    let (p4k, dcb_bytes) = started(stdin, load_dcb_bytes(p4k_path.as_deref(), None))?;
+    let p4k = started(
+        stdin,
+        p4k.ok_or_else(|| CliError::MissingRequirement("P4k required for entity export".into())),
+    )?;
+    let db = started(stdin, Database::from_bytes(&dcb_bytes).map_err(CliError::from))?;
     let idx = EntityIndex::new(&db);
-    let records = entity_records_by_name(&db)?;
+    let records = started(stdin, entity_records_by_name(&db))?;
 
-    // Reusable assets written so far, per output root (lower-case relative paths).
-    let mut written: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    let stdout = std::io::stdout();
-    for job in &jobs {
+    let run_job = |job: &BatchJob, assets: &mut HashSet<String>| {
         let start = Instant::now();
         let result = match records.get(&job.name.to_ascii_lowercase()) {
             None => Err(CliError::NotFound(format!("no EntityClassDefinition record named '{}'", job.name))),
             Some(record) => {
-                let assets = written.entry(job.output.clone()).or_default();
                 let worn_result = job
                     .worn
                     .then(|| export_one(&db, &p4k, &idx, record, &job.output, &opts, true, icon_files, assets));
@@ -113,7 +222,7 @@ pub(crate) fn export_batch(jobs_path: PathBuf, p4k_path: Option<PathBuf>, icon_f
                 }
             }
         };
-        let line = match &result {
+        match &result {
             Ok((package, worn)) => serde_json::json!({
                 "name": job.name, "ok": true, "package": package, "worn": worn,
                 "seconds": start.elapsed().as_secs_f64(),
@@ -122,14 +231,25 @@ pub(crate) fn export_batch(jobs_path: PathBuf, p4k_path: Option<PathBuf>, icon_f
                 "name": job.name, "ok": false, "error": e.to_string(),
                 "seconds": start.elapsed().as_secs_f64(),
             }),
-        };
-        let mut out = stdout.lock();
-        writeln!(out, "{line}").and_then(|_| out.flush()).map_err(|e| CliError::IoPath {
-            source: e,
-            path: "stdout".into(),
-        })?;
+        }
+    };
+
+    let stdout = std::io::stdout();
+    match jobs {
+        Some(jobs) => {
+            // Reusable assets written so far, per output root (lower-case relative paths).
+            let mut written: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+            for job in &jobs {
+                let line = run_job(job, written.entry(job.output.clone()).or_default());
+                emit(&mut stdout.lock(), &line)?;
+            }
+            Ok(())
+        }
+        None => {
+            emit(&mut stdout.lock(), &serde_json::json!({ "ready": true }))?;
+            serve(std::io::stdin().lock(), &mut stdout.lock(), run_job)
+        }
     }
-    Ok(())
 }
 
 /// Export one entity's decomposed package; returns the package directory.
@@ -224,6 +344,62 @@ mod tests {
         assert!(parse_jobs(br#"[{"output":"x"}]"#).is_err());
         assert!(parse_jobs(br#"[{"name":"a"}]"#).is_err());
         assert!(parse_jobs(br#"{"name":"a"}"#).is_err());
+    }
+
+    #[test]
+    fn requests_parse() {
+        assert_eq!(
+            parse_request(r#"{"name":"a","output":"x/1","worn":true}"#).unwrap(),
+            Request::Job(BatchJob { name: "a".into(), output: PathBuf::from("x/1"), worn: true })
+        );
+        assert_eq!(parse_request(r#"{"end_chunk":"x/1"}"#).unwrap(), Request::EndChunk("x/1".into()));
+        assert_eq!(parse_request(r#"{"quit":true}"#).unwrap(), Request::Quit);
+        assert_eq!(parse_request(r#"{"name":"a"}"#).unwrap_err()["name"], "a");
+        assert!(parse_request(r#"{"end_chunk":""}"#).is_err());
+        assert!(parse_request("[1]").is_err());
+        assert!(parse_request("nope").is_err());
+    }
+
+    /// The fake job reports the assets its root already had, then adds its own name.
+    fn serve_lines(input: &str) -> Vec<serde_json::Value> {
+        let mut out = Vec::new();
+        serve(input.as_bytes(), &mut out, |job, assets| {
+            let seen = assets.len();
+            assets.insert(job.name.clone());
+            serde_json::json!({ "name": job.name, "ok": true, "seen": seen })
+        })
+        .unwrap();
+        String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    }
+
+    #[test]
+    fn serve_answers_every_request_and_end_chunk_forgets_the_root() {
+        let lines = serve_lines(concat!(
+            "{\"name\":\"a\",\"output\":\"x/1\"}\n",
+            "{\"name\":\"b\",\"output\":\"x/2\"}\r\n",
+            "\n",
+            "{\"name\":\"c\",\"output\":\"x/1\"}\n",
+            "garbage\n",
+            "{\"end_chunk\":\"x/1\"}\n",
+            "{\"name\":\"d\",\"output\":\"x/1\"}\n",
+            "{\"name\":\"e\",\"output\":\"x/2\"}\n",
+            "{\"quit\":true}\n",
+            "{\"name\":\"never\",\"output\":\"x/1\"}\n",
+        ));
+        let seen = |i: usize| lines[i]["seen"].as_u64().unwrap();
+        assert_eq!(lines.len(), 7);
+        assert_eq!((seen(0), seen(1), seen(2)), (0, 0, 1));
+        assert_eq!(lines[3]["ok"], false);
+        assert_eq!(lines[4], serde_json::json!({ "chunk_done": "x/1" }));
+        // x/1 starts over, x/2 still reuses b's assets
+        assert_eq!((lines[5]["name"].as_str(), seen(5)), (Some("d"), 0));
+        assert_eq!((lines[6]["name"].as_str(), seen(6)), (Some("e"), 1));
+    }
+
+    #[test]
+    fn serve_ends_at_eof() {
+        assert_eq!(serve_lines("{\"name\":\"a\",\"output\":\"x\"}").len(), 1);
+        assert!(serve_lines("").is_empty());
     }
 
     #[test]

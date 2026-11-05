@@ -313,6 +313,13 @@ impl ReadSibling for P4kSiblingReader<'_> {
             .entry_case_insensitive(&path)
             .and_then(|entry| self.p4k.read(entry).ok())
     }
+
+    fn sibling_size(&self, suffix: &str) -> Option<usize> {
+        let path = format!("{}{suffix}", self.base_path);
+        self.p4k
+            .entry_case_insensitive(&path)
+            .map(|entry| entry.uncompressed_size as usize)
+    }
 }
 
 /// Load all textures (diffuse + normal) for a material file.
