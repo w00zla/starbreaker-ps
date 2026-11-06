@@ -2,7 +2,7 @@
 
 > **This is a fork.** starbreaker-ps merges [fleetyards/StarBreaker](https://github.com/fleetyards/StarBreaker), itself a fork of
 > [diogotr7/StarBreaker](https://github.com/diogotr7/StarBreaker), with the current upstream. It is the exporter and Blender
-> add-on behind [packshot](https://github.com/w00zla/sc-packshot)<!-- TODO: placeholder URL -->, a renderer for Star Citizen
+> add-on behind [packshot](https://github.com/w00zla/sc-packshot), a renderer for Star Citizen
 > entities, so its focus is decomposed item exports and how their materials come out in Blender. Decisions are recorded in
 > [docs/adr](docs/adr/README.md).
 >
