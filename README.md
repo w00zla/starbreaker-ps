@@ -16,7 +16,7 @@
 >   not run, so upstream's add-on additions (skin, hair, screens, control-only POM decals) are not in this fork.
 > - **Own changes:**
 >   - `entity export-batch`: many entities per P4k/DataCore load, JSON lines out; with `--stdin` it is a long-lived
->     process fed one job per line.
+>     process fed one job per line; a job that panics is answered as a failed job instead of ending it.
 >   - Generic material rules in the exporter: the `Material` node (`SMaterialNodeParams`) when the geometry names
 >     none, material-named mesh files so variants share one `Data/` tree, the chosen SubGeometry for worn and paint
 >     variants, palette fallbacks, LayerBlend decals via the second UV set.
