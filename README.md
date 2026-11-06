@@ -23,11 +23,15 @@
 >   - DDS textures read only the mip levels an export needs.
 >   - Add-on: material rules fitted to the game's inventory tiles (glow, glass, organics, palette metals, monitors),
 >     faster import with pixel-identical results.
-> - **Version** `0.3.2-qm.n`: build with `cargo build --release -p starbreaker`. Tagged releases for packshot are
+> - **Version** `0.3.2-ps.n`: build with `cargo build --release -p starbreaker`. Tagged releases for packshot are
 >   planned ([ADR 0009](docs/adr/0009-tagged-releases-for-packshot.md)).
 >
 > Not affiliated with either project; problems with this fork belong here, not upstream. Everything below is the original
 > upstream README.
+>
+> This is an unofficial Star Citizen fan project, not endorsed by or affiliated with the Cloud Imperium group of
+> companies. Game content and materials are copyright Cloud Imperium Rights LLC and Cloud Imperium Rights Ltd.; Star
+> Citizen® is a registered trademark of Cloud Imperium Rights LLC. This repository contains no game data.
 
 ---
 
