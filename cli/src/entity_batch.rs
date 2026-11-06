@@ -21,7 +21,9 @@
 //! `{"chunk_done": "<output>"}`) or `{"quit": true}`. EOF ends it as well.
 //! A line that is not a valid request is answered with
 //! `{"ok": false, "error"}` (plus `name` when it has one). A panic in a job
-//! ends the process, as in batch mode.
+//! (either mode) is caught by `run_guarded`: it is answered like a failed job
+//! with `"error": "panic: <message>"`, its output root's reuse list is
+//! cleared, and the process goes on with the next job.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
@@ -119,6 +121,36 @@ fn emit(out: &mut impl Write, line: &serde_json::Value) -> Result<()> {
         .map_err(|e| CliError::IoPath { source: e, path: "stdout".into() })
 }
 
+/// Run one job; a panic in it becomes a failed result line
+/// (`{"name", "ok": false, "error": "panic: <message>", "seconds"}`) instead of
+/// ending the process. The default panic hook has already printed the trace to
+/// stderr. The job may have left its output root's reuse list half-written, so
+/// it is cleared: the next job of that root exports its assets again. No other
+/// state is shared between jobs (the P4k is read-only, the loadout index only
+/// caches complete entries, the locks in use are `parking_lot`'s and do not poison).
+fn run_guarded(
+    job: &mut impl FnMut(&BatchJob, &mut HashSet<String>) -> serde_json::Value,
+    j: &BatchJob,
+    assets: &mut HashSet<String>,
+) -> serde_json::Value {
+    let start = Instant::now();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(j, &mut *assets))) {
+        Ok(result) => result,
+        Err(payload) => {
+            assets.clear();
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_owned());
+            serde_json::json!({
+                "name": j.name, "ok": false, "error": format!("panic: {message}"),
+                "seconds": start.elapsed().as_secs_f64(),
+            })
+        }
+    }
+}
+
 /// `--stdin` mode after loading: answer request lines until EOF or quit.
 /// `job` exports one job, given the assets written so far into its output root.
 fn serve(
@@ -126,6 +158,7 @@ fn serve(
     out: &mut impl Write,
     mut job: impl FnMut(&BatchJob, &mut HashSet<String>) -> serde_json::Value,
 ) -> Result<()> {
+    // `job` runs through `run_guarded`: a panic in it is answered, not fatal.
     // Reusable assets written so far, per output root (lower-case relative paths).
     let mut written: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     for line in input.lines() {
@@ -136,7 +169,7 @@ fn serve(
         }
         match parse_request(line) {
             Ok(Request::Job(j)) => {
-                let result = job(&j, written.entry(j.output.clone()).or_default());
+                let result = run_guarded(&mut job, &j, written.entry(j.output.clone()).or_default());
                 emit(out, &result)?;
             }
             Ok(Request::EndChunk(dir)) => {
@@ -206,7 +239,7 @@ pub(crate) fn export_batch(
     let idx = EntityIndex::new(&db);
     let records = started(stdin, entity_records_by_name(&db))?;
 
-    let run_job = |job: &BatchJob, assets: &mut HashSet<String>| {
+    let mut run_job = |job: &BatchJob, assets: &mut HashSet<String>| {
         let start = Instant::now();
         let result = match records.get(&job.name.to_ascii_lowercase()) {
             None => Err(CliError::NotFound(format!("no EntityClassDefinition record named '{}'", job.name))),
@@ -240,7 +273,7 @@ pub(crate) fn export_batch(
             // Reusable assets written so far, per output root (lower-case relative paths).
             let mut written: HashMap<PathBuf, HashSet<String>> = HashMap::new();
             for job in &jobs {
-                let line = run_job(job, written.entry(job.output.clone()).or_default());
+                let line = run_guarded(&mut run_job, job, written.entry(job.output.clone()).or_default());
                 emit(&mut stdout.lock(), &line)?;
             }
             Ok(())
@@ -394,6 +427,36 @@ mod tests {
         // x/1 starts over, x/2 still reuses b's assets
         assert_eq!((lines[5]["name"].as_str(), seen(5)), (Some("d"), 0));
         assert_eq!((lines[6]["name"].as_str(), seen(6)), (Some("e"), 1));
+    }
+
+    #[test]
+    fn serve_survives_a_panicking_job_and_resets_its_root() {
+        let mut out = Vec::new();
+        let input = concat!(
+            "{\"name\":\"a\",\"output\":\"x/1\"}\n",
+            "{\"name\":\"b\",\"output\":\"x/2\"}\n",
+            "{\"name\":\"boom\",\"output\":\"x/1\"}\n",
+            "{\"name\":\"c\",\"output\":\"x/1\"}\n",
+            "{\"name\":\"d\",\"output\":\"x/2\"}\n",
+        );
+        serve(input.as_bytes(), &mut out, |job, assets| {
+            let seen = assets.len();
+            assets.insert(job.name.clone());
+            if job.name == "boom" {
+                panic!("exporter blew up");
+            }
+            serde_json::json!({ "name": job.name, "ok": true, "seen": seen })
+        })
+        .unwrap();
+        let lines: Vec<serde_json::Value> =
+            String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.len(), 5);
+        assert_eq!((lines[2]["name"].as_str(), lines[2]["ok"].as_bool()), (Some("boom"), Some(false)));
+        assert_eq!(lines[2]["error"], "panic: exporter blew up");
+        assert!(lines[2]["seconds"].is_number());
+        // The panicked root forgets what the job half-wrote; other roots are untouched.
+        assert_eq!((lines[3]["name"].as_str(), lines[3]["seen"].as_u64()), (Some("c"), Some(0)));
+        assert_eq!((lines[4]["name"].as_str(), lines[4]["seen"].as_u64()), (Some("d"), Some(1)));
     }
 
     #[test]
