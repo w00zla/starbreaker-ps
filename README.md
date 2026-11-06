@@ -1,9 +1,10 @@
-# StarBreaker (starbreaker-qm)
+# StarBreaker (starbreaker-ps)
 
-> **This is a fork.** starbreaker-qm merges [fleetyards/StarBreaker](https://github.com/fleetyards/StarBreaker), itself a fork of
-> [diogotr7/StarBreaker](https://github.com/diogotr7/StarBreaker), with the current upstream. It exists to render inventory-style
-> item icons (FPS weapons, armour, ship components, ores) for a Star Citizen org tool, so its focus is decomposed item exports and
-> how their materials come out in Blender.
+> **This is a fork.** starbreaker-ps merges [fleetyards/StarBreaker](https://github.com/fleetyards/StarBreaker), itself a fork of
+> [diogotr7/StarBreaker](https://github.com/diogotr7/StarBreaker), with the current upstream. It is the exporter and Blender
+> add-on behind [packshot](https://github.com/w00zla/sc-packshot)<!-- TODO: placeholder URL -->, a renderer for Star Citizen
+> entities, so its focus is decomposed item exports and how their materials come out in Blender. Decisions are recorded in
+> [docs/adr](docs/adr/README.md).
 >
 > - **Base: the fleetyards fork** and its item and material work: CDF weapon parts placed correctly (magazines included),
 >   `--worn` for armour (the worn model with its material and tint palette instead of the loot crate), `--variant-tags` for paint
@@ -13,13 +14,17 @@
 >   path keeps the fleetyards behaviour.
 > - **Blender add-on:** the fleetyards one. Both sides rebuilt the decal system across several modules and a mix did
 >   not run, so upstream's add-on additions (skin, hair, screens, control-only POM decals) are not in this fork.
-> - **Own changes (qm.2):** `entity export-batch` (many entities per P4k/DataCore load, JSON lines out, worn fallback,
->   `--icon-files`); an entity's material from its `Material` node (`SMaterialNodeParams`) when the geometry names
->   none; item mesh files carry their material in the name, so variants share one `Data/` tree. Add-on: slot names
->   with an authored trailing space match their submaterial; emission strength is `Glow`, not the `Emissive`
->   colour; `Organic` takes its first layer's tint; `GlassPBR` gets raytraced refraction; `blender -b` builds the
->   materials on load.
-> - **Version** `0.3.2-qm.n`, no releases: build with `cargo build --release -p starbreaker`.
+> - **Own changes:**
+>   - `entity export-batch`: many entities per P4k/DataCore load, JSON lines out; with `--stdin` it is a long-lived
+>     process fed one job per line.
+>   - Generic material rules in the exporter: the `Material` node (`SMaterialNodeParams`) when the geometry names
+>     none, material-named mesh files so variants share one `Data/` tree, the chosen SubGeometry for worn and paint
+>     variants, palette fallbacks, LayerBlend decals via the second UV set.
+>   - DDS textures read only the mip levels an export needs.
+>   - Add-on: material rules fitted to the game's inventory tiles (glow, glass, organics, palette metals, monitors),
+>     faster import with pixel-identical results.
+> - **Version** `0.3.2-qm.n`: build with `cargo build --release -p starbreaker`. Tagged releases for packshot are
+>   planned ([ADR 0009](docs/adr/0009-tagged-releases-for-packshot.md)).
 >
 > Not affiliated with either project; problems with this fork belong here, not upstream. Everything below is the original
 > upstream README.
