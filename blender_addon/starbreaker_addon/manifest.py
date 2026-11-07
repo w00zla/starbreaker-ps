@@ -869,6 +869,11 @@ class PackageBundle:
             direct = self.export_root / Path(candidate)
             if direct.exists():
                 return direct
+        return self._resolve_through_index(candidates)
+
+    def _resolve_through_index(self, candidates: list[str]) -> Path | None:
+        # The case-insensitive lookup, for references whose casing differs from the files on a
+        # case-sensitive file system (elsewhere the direct lookup above already finds them).
         resolved = self._lookup_path_index(candidates)
         if resolved is None and not self._path_index_fresh:
             # An index taken from the shared ones may predate files exported since: scan once more.

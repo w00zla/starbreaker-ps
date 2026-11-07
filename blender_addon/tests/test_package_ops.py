@@ -249,7 +249,7 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
             self.package_root = package_root
 
         def import_scene(self, prefer_cycles=True, palette_id=None):
-            importer_stub.events.append(("import", str(self.package.scene_path), prefer_cycles, palette_id))
+            importer_stub.events.append(("import", self.package.scene_path, prefer_cycles, palette_id))
             return "imported-root"
 
         def rebuild_object_materials(self, obj, palette_id):
@@ -310,10 +310,10 @@ class PackageOpsTests(unittest.TestCase):
         self.assertEqual(list(self.bpy.data.objects), [other_root])
 
     def test_import_package_removes_existing_package_before_import(self) -> None:
-        events: list[tuple[str, str]] = []
+        events: list[tuple[str, Path]] = []
 
         def _cleanup(scene_path):
-            events.append(("cleanup", str(scene_path)))
+            events.append(("cleanup", scene_path))
             return 1
 
         @contextmanager
@@ -329,10 +329,11 @@ class PackageOpsTests(unittest.TestCase):
         root = self.package_ops.import_package(context, "/tmp/vulture/scene.json", prefer_cycles=False, palette_id="palette/test")
 
         self.assertEqual(root, "imported-root")
-        self.assertEqual(events, [("cleanup", "/tmp/vulture/scene.json")])
+        # Paths, not their strings: str() of a Path uses the OS separator.
+        self.assertEqual(events, [("cleanup", Path("/tmp/vulture/scene.json"))])
         self.assertEqual(
             importer_stub.events,
-            [("import", "/tmp/vulture/scene.json", False, "palette/test")],
+            [("import", Path("/tmp/vulture/scene.json"), False, "palette/test")],
         )
 
     def test_refresh_materials_rebuilds_only_meshes_with_sidecars(self) -> None:
