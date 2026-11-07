@@ -1,6 +1,6 @@
 # StarBreaker (starbreaker-ps)
 
-[![Tests](https://github.com/w00zla/starbreaker-ps/actions/workflows/test-ps.yml/badge.svg?branch=main)](https://github.com/w00zla/starbreaker-ps/actions/workflows/test-ps.yml)
+[![Tests](https://github.com/w00zla/starbreaker-ps/actions/workflows/test-ps.yml/badge.svg?event=pull_request)](https://github.com/w00zla/starbreaker-ps/actions/workflows/test-ps.yml)
 [![Release](https://img.shields.io/github/v/release/w00zla/starbreaker-ps?color=54adf7)](https://github.com/w00zla/starbreaker-ps/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-54adf7)](LICENSE)
 [![Rust stable](https://img.shields.io/badge/rust-stable-54adf7?logo=rust)](Cargo.toml)

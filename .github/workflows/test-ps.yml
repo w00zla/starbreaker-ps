@@ -2,17 +2,17 @@ name: Tests (starbreaker-ps)
 
 # The fork's own test workflow (ADR 0012). Upstream's ci.yml, starbreaker-ui-tests.yml and deploy-website.yml stay in
 # the tree unchanged, so upstream merges do not conflict, but are disabled in this repository's Actions settings.
+# Pull requests and by hand only (ADR 0017): main changes only through pull requests, a run after the merge would
+# test the same code twice.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
-# A new push to a pull request cancels its stale run; main runs never cancel each other.
+# A new push to a pull request cancels its stale run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -36,7 +36,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           shared-key: ps-test-${{ matrix.platform }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # saved per pull request (its later pushes read it): no main run fills a shared one (ADR 0017)
       # Everything but the Tauri app: packshot needs the CLI and its crates, and the app needs webkit on Linux.
       - name: cargo test
         run: cargo test --workspace --exclude starbreaker-app --locked

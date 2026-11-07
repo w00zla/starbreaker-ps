@@ -1,6 +1,6 @@
 # 0012. Own test and release workflows; upstream's stay in the tree, disabled
 
-- Status: accepted
+- Status: accepted; superseded in part by [0017](0017-tests-on-pull-requests-releases-on-tags-only.md) (no runs on pushes to main)
 - Date: 2026-11-07
 - Scope: CI, release process
 

@@ -17,8 +17,9 @@ one, and only the old record's status line and this index change. Records 0001-0
 | [0009](0009-tagged-releases-for-packshot.md) | Publish tagged releases for packshot to pin | accepted; names per [0010](0010-version-suffix-ps.md), process per [0012](0012-own-test-and-release-workflows.md) | 2026-11-05 |
 | [0010](0010-version-suffix-ps.md) | Version suffix -ps.n | accepted | 2026-11-06 |
 | [0011](0011-follow-agents-git-rules.md) | Changes follow AGENTS.md: pull requests, squash merge, no trailers | superseded in part by [0014](0014-co-authored-by-trailers-allowed.md) | 2026-11-06 |
-| [0012](0012-own-test-and-release-workflows.md) | Own test and release workflows; upstream's stay in the tree, disabled | accepted | 2026-11-07 |
+| [0012](0012-own-test-and-release-workflows.md) | Own test and release workflows; upstream's stay in the tree, disabled | accepted; superseded in part by [0017](0017-tests-on-pull-requests-releases-on-tags-only.md) | 2026-11-07 |
 | [0013](0013-export-batch-catches-panics-per-job.md) | entity export-batch catches a panic per job | accepted | 2026-11-06 |
 | [0014](0014-co-authored-by-trailers-allowed.md) | Co-authored-by trailers are allowed | accepted | 2026-11-07 |
 | [0015](0015-addon-grafts-upstream-parts-keeps-item-path.md) | The add-on takes upstream's self-contained parts and keeps the item path | superseded in part by [0016](0016-own-blend-libraries-with-text-image.md) | 2026-11-07 |
 | [0016](0016-own-blend-libraries-with-text-image.md) | The add-on owns its .blend libraries, each with a text image and a test | accepted | 2026-11-07 |
+| [0017](0017-tests-on-pull-requests-releases-on-tags-only.md) | Tests on pull requests only, release builds on tags only | accepted | 2026-11-08 |
