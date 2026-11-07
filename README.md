@@ -27,6 +27,7 @@
 >     none, material-named mesh files so variants share one `Data/` tree, the chosen SubGeometry for worn and paint
 >     variants, palette fallbacks, LayerBlend decals via the second UV set.
 >   - DDS textures read only the mip levels an export needs.
+>   - `dcb query --ids`: each line of a property query also carries the record id (`<name>\t<id>\t<value>`).
 >   - Add-on: material rules fitted to the game's inventory tiles (glow, glass, organics, palette metals, monitors),
 >     faster import with pixel-identical results.
 > - **GUI not maintained:** the desktop app (`app/`) is not the focus of this fork. It is not built or tested here and may

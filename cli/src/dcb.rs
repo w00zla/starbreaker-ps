@@ -60,6 +60,9 @@ pub enum DcbCommand {
         /// Filter record names by glob
         #[arg(long)]
         filter: Option<String>,
+        /// With a property path: print each record's id after its name (`<name>\t<id>\t<value>`)
+        #[arg(long)]
+        ids: bool,
     },
 }
 
@@ -93,7 +96,8 @@ impl DcbCommand {
                 dcb,
                 path,
                 filter,
-            } => query(p4k, dcb, path, filter),
+                ids,
+            } => query(p4k, dcb, path, filter, ids),
         }
     }
 }
@@ -217,6 +221,7 @@ fn query(
     dcb_path: Option<PathBuf>,
     path: String,
     filter: Option<String>,
+    ids: bool,
 ) -> Result<()> {
     let (_p4k, dcb_bytes) = load_dcb_bytes(p4k_path.as_deref(), dcb_path.as_deref())?;
     let db = Database::from_bytes(&dcb_bytes)?;
@@ -273,15 +278,13 @@ fn query(
 
         for record in &records {
             let name = db.resolve_string2(record.name_offset);
+            let id = ids.then(|| record.id.to_string());
             match db.query::<Value>(&compiled, record) {
                 Ok(values) if values.is_empty() => {}
                 Ok(values) => {
                     for value in &values {
-                        let json = value_to_json(value);
-                        match json {
-                            serde_json::Value::String(s) => println!("{name}\t{s}"),
-                            serde_json::Value::Null => {}
-                            other => println!("{name}\t{other}"),
+                        if let Some(line) = query_line(name, id.as_deref(), &value_to_json(value)) {
+                            println!("{line}");
                         }
                     }
                 }
@@ -320,5 +323,42 @@ fn value_to_json(value: &Value) -> serde_json::Value {
             }
             serde_json::Value::Object(map)
         }
+    }
+}
+
+/// One output line of a property query: `<record name>\t<value>`, with `--ids` `<record name>\t<record id>\t<value>`;
+/// None for a null value.
+fn query_line(name: &str, id: Option<&str>, value: &serde_json::Value) -> Option<String> {
+    let value = match value {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    Some(match id {
+        Some(id) => format!("{name}\t{id}\t{value}"),
+        None => format!("{name}\t{value}"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::query_line;
+    use serde_json::json;
+
+    #[test]
+    fn query_line_without_ids_is_name_and_value() {
+        assert_eq!(query_line("EntityClassDefinition.a", None, &json!("Cooler")).as_deref(), Some("EntityClassDefinition.a\tCooler"));
+        assert_eq!(query_line("EntityClassDefinition.a", None, &json!(3)).as_deref(), Some("EntityClassDefinition.a\t3"));
+    }
+
+    #[test]
+    fn query_line_with_ids_puts_the_record_id_second() {
+        let id = "02d4cd2e-fa98-4086-aee1-6b2dfce8ea27";
+        assert_eq!(query_line("EntityClassDefinition.a", Some(id), &json!("Cooler")).as_deref(), Some(format!("EntityClassDefinition.a\t{id}\tCooler").as_str()));
+    }
+
+    #[test]
+    fn query_line_skips_null() {
+        assert_eq!(query_line("EntityClassDefinition.a", Some("x"), &json!(null)), None);
     }
 }
