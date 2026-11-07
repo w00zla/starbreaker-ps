@@ -17,9 +17,7 @@ from mathutils import Matrix, Quaternion
 from ..constants import (
     GLTF_LIGHT_BASIS_CORRECTION,
     GLTF_PBR_WATTS_TO_LUMENS,
-    HEADLIGHT_GOBO_THROW_GAIN,
     LIGHT_CANDELA_TO_WATT,
-    LIGHT_VISUAL_GAIN,
     LUMENS_PER_WATT_WHITE,
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
@@ -30,10 +28,10 @@ from ..constants import (
     PROP_TEMPLATE_KEY,
     PROP_SOURCE_NODE_NAME,
     PROP_SUBMATERIAL_JSON,
-    SC_LIGHT_CANDELA_SCALE,
     SCENE_AXIS_CONVERSION,
     SCENE_AXIS_CONVERSION_INV,
 )
+from .. import constants
 from ..package_ops import _scene_instance_from_object, _string_prop
 from ...manifest import MaterialSidecar, PackageBundle, PaletteRecord, SubmaterialRecord
 from ...material_contract import ContractInput
@@ -374,7 +372,7 @@ def _light_gobo_strength(projector_texture: str | None, *, mean_luminance: float
     mean = max(float(mean_luminance), 0.0)
     if mean <= 0.0:
         return 1.0
-    return min(HEADLIGHT_GOBO_THROW_GAIN / mean, 640.0)
+    return min(constants.HEADLIGHT_GOBO_THROW_GAIN / mean, 640.0)
 
 
 def _light_energy_to_blender(
@@ -400,11 +398,11 @@ def _light_energy_to_blender(
     if blender_light_type == "SUN":
         return intensity_candela_proxy / GLTF_PBR_WATTS_TO_LUMENS
     if blender_light_type == "AREA":
-        lumens = float(intensity_raw) if intensity_raw is not None else intensity_candela_proxy / SC_LIGHT_CANDELA_SCALE
+        lumens = float(intensity_raw) if intensity_raw is not None else intensity_candela_proxy / constants.SC_LIGHT_CANDELA_SCALE
         return max(lumens, 0.0) / LUMENS_PER_WATT_WHITE
     if semantic == "ambient_proxy":
         return intensity_candela_proxy * LIGHT_CANDELA_TO_WATT
-    return intensity_candela_proxy * LIGHT_CANDELA_TO_WATT * LIGHT_VISUAL_GAIN
+    return intensity_candela_proxy * LIGHT_CANDELA_TO_WATT * constants.LIGHT_VISUAL_GAIN
 
 
 def _is_axis_conversion_root(obj: bpy.types.Object) -> bool:

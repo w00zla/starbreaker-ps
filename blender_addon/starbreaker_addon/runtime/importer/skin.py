@@ -29,7 +29,7 @@ from typing import Any
 
 import bpy
 
-from ..constants import SKIN_SUBSURFACE_RADIUS, SKIN_SUBSURFACE_SCALE, SKIN_TRANSMITTANCE_SCALE_GAIN
+from .. import constants
 from ..node_utils import _input_socket, _output_socket
 from ..record_utils import _submaterial_texture_reference
 from ..skin_utils import LUMINANCE, HumanSkinParams, human_skin_params, tone_constants
@@ -193,16 +193,16 @@ class SkinMixin:
         _input_socket(principled, "Subsurface Weight", "Subsurface").default_value = 1.0
         radius = _input_socket(principled, "Subsurface Radius")
         if radius is not None:
-            radius.default_value = SKIN_SUBSURFACE_RADIUS
+            radius.default_value = constants.SKIN_SUBSURFACE_RADIUS
         scale = _input_socket(principled, "Subsurface Scale")
         translucency = tex(slot_path("TexSlot12"), color=False)
         if scale is not None:
             if translucency is not None and params.translucency > 0.0:
                 transmittance = g.math("MULTIPLY", g.split(color_of(translucency))[0], params.translucency * 0.25)
-                widen = g.math("ADD", 1.0, g.math("MULTIPLY", transmittance, SKIN_TRANSMITTANCE_SCALE_GAIN))
-                links.new(g.math("MULTIPLY", widen, SKIN_SUBSURFACE_SCALE), scale)
+                widen = g.math("ADD", 1.0, g.math("MULTIPLY", transmittance, constants.SKIN_TRANSMITTANCE_SCALE_GAIN))
+                links.new(g.math("MULTIPLY", widen, constants.SKIN_SUBSURFACE_SCALE), scale)
             else:
-                scale.default_value = SKIN_SUBSURFACE_SCALE
+                scale.default_value = constants.SKIN_SUBSURFACE_SCALE
 
         output = nodes.new("ShaderNodeOutputMaterial")
         self._wire_surface_shader_to_output(nodes, links, principled.outputs[0], output, plan, submaterial)

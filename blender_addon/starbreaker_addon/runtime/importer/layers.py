@@ -30,6 +30,7 @@ import bpy
 from ...manifest import LayerManifestEntry, PaletteRecord, SubmaterialRecord
 from ...palette import palette_finish_glossiness_factor, palette_finish_specular
 from ...templates import representative_textures
+from .. import constants
 from ..constants import SCENE_WEAR_STRENGTH_PROP
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets
 from ..record_utils import (
@@ -778,7 +779,10 @@ class LayersMixin:
     # Wear / damage / iridescence / angle factor sockets
     # ------------------------------------------------------------------
     def _wear_strength(self) -> float:
-        raw_value = getattr(self.context.scene, SCENE_WEAR_STRENGTH_PROP, 0.0)
+        """The scene's Wear Strength slider, or the look knob ``WEAR_STRENGTH_OVERRIDE`` when set; 0-2."""
+        raw_value = constants.WEAR_STRENGTH_OVERRIDE
+        if raw_value is None:
+            raw_value = getattr(self.context.scene, SCENE_WEAR_STRENGTH_PROP, 0.0)
         try:
             value = float(raw_value)
         except (TypeError, ValueError):
@@ -904,11 +908,12 @@ class LayersMixin:
         y: int,
     ) -> Any:
         """Wear factor from a layer blend map (``_layer_blend_wear_texture``):
-        its red over 0.6-0.8, smoothstep. An authored pattern, not dynamic
-        wear, so the scene's wear strength does not scale it. The range is
-        fitted to the game's inventory tiles: Hephaestanite's orange covered
-        about half the rock at 0.3-0.7 and only flecks at 0.7-0.9, the game
-        shows patches in between.
+        its red over the look knob ``ORE_VEIN_SMOOTHSTEP`` (0.6-0.8),
+        smoothstep. An authored pattern, not dynamic wear, so the scene's
+        wear strength does not scale it. The range is fitted to the game's
+        inventory tiles: Hephaestanite's orange covered about half the rock
+        at 0.3-0.7 and only flecks at 0.7-0.9, the game shows patches in
+        between.
         """
         image = self._image_node(nodes, path, x=x - 520, y=y, is_color=False)
         if image is None:
@@ -919,8 +924,9 @@ class LayersMixin:
         sharpen = nodes.new("ShaderNodeMapRange")
         sharpen.location = (x, y)
         sharpen.interpolation_type = "SMOOTHSTEP"
-        sharpen.inputs["From Min"].default_value = 0.6
-        sharpen.inputs["From Max"].default_value = 0.8
+        low, high = constants.ORE_VEIN_SMOOTHSTEP
+        sharpen.inputs["From Min"].default_value = low
+        sharpen.inputs["From Max"].default_value = high
         links.new(_output_socket(separate, "Red"), sharpen.inputs["Value"])
         return sharpen.outputs["Result"]
 

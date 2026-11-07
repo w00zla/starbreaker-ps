@@ -59,6 +59,7 @@ def _load_utils() -> tuple[types.ModuleType, types.ModuleType]:
     # Rewrite relative imports to absolute paths under our shim package root.
     utils_src = utils_src.replace("from ...", "from sb_lights_test_addon.")
     utils_src = utils_src.replace("from ..constants import", "from sb_lights_test_runtime.constants import")
+    utils_src = utils_src.replace("from .. import constants", "from sb_lights_test_runtime import constants")
     utils_src = utils_src.replace("from ..", "from sb_lights_test_runtime.")
     # Stub modules referenced via the shim addon root (manifest, palette, etc.).
     addon_pkg = types.ModuleType("sb_lights_test_addon")
@@ -207,6 +208,24 @@ class LightMappingTests(unittest.TestCase):
 
     def test_visual_gain_is_positive(self):
         self.assertGreaterEqual(self.constants.LIGHT_VISUAL_GAIN, 1.0)
+
+    def test_light_knobs_are_read_at_use_time(self):
+        # A packshot profile sets them on the constants module before a file opens (fork ADR 0015).
+        saved = (self.constants.LIGHT_VISUAL_GAIN, self.constants.HEADLIGHT_GOBO_THROW_GAIN, self.constants.SC_LIGHT_CANDELA_SCALE)
+        try:
+            self.constants.LIGHT_VISUAL_GAIN = 2.0
+            self.constants.HEADLIGHT_GOBO_THROW_GAIN = 1.0
+            self.constants.SC_LIGHT_CANDELA_SCALE = 3.0
+            self.assertAlmostEqual(
+                self.utils._light_energy_to_blender(100.0, "POINT"), 100.0 * self.constants.LIGHT_CANDELA_TO_WATT * 2.0
+            )
+            self.assertAlmostEqual(self.utils._light_gobo_strength("headlight_1.dds", mean_luminance=0.5), 2.0)
+            self.assertAlmostEqual(
+                self.utils._light_energy_to_blender(360.0, "AREA"), 120.0 / self.constants.LUMENS_PER_WATT_WHITE
+            )
+        finally:
+            (self.constants.LIGHT_VISUAL_GAIN, self.constants.HEADLIGHT_GOBO_THROW_GAIN,
+             self.constants.SC_LIGHT_CANDELA_SCALE) = saved
 
 
 if __name__ == "__main__":  # pragma: no cover

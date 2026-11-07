@@ -86,10 +86,39 @@ See the project-wide `Coding Practices` section in
   (`LIGHT_VISUAL_GAIN`, `LIGHT_CANDELA_TO_WATT`, shadow-radius
   floors, custom-property names) live there. Never hard-code a
   magic number inside a mixin.
+- **Look knobs are read at use time** (fork ADR 0015): consumers write
+  `from .. import constants` and read `constants.NAME` while building, never
+  `from ..constants import NAME` (a copy a profile cannot change);
+  `tests/test_look_knobs.py` guards this. Pure modules (`templates.py`,
+  `record_utils.py`) take the value as a parameter from the builder.
 - **Never leave the scene dirty for the next test.** If an operator
   mutates `bpy.data` in a way that another test might observe,
   unwind it or use `bpy.ops.wm.read_homefile(app_template="")`
   between fixtures.
+
+## Look knobs
+
+Values tuned by eye (not game data) in `runtime/constants.py`. A packshot
+profile sets one before a file opens:
+`from starbreaker_addon.runtime import constants; constants.MONITOR_ROUGHNESS = 0.5`.
+Defaults are today's look.
+
+| Knob | Default | What it does |
+|---|---|---|
+| `MONITOR_ROUGHNESS` | 0.35 | roughness of a Monitor's reflecting surface (Dark Bear eyes) |
+| `LAYER_BLEND_GLOW_TINT_WEIGHT` | 0.5 | LayerBlend flat-layer glow: Emissive^(1-w) * tint^w (0 Emissive, 1 tint) |
+| `ORE_VEIN_SMOOTHSTEP` | (0.6, 0.8) | range of an ore thumbnail's vein map that turns rock into vein |
+| `ORGANIC_TINT_GAIN` | 2.0 | gain on a mineral's (Organic) layer tint x layer diffuse |
+| `METAL_TINT_HUE_ONLY_BELOW` | 0.1 | a metal layer tint darker than this keeps only its hue on the F0 |
+| `LAYER_BLEND_WEAR_MASK_GAIN` | 4.0 | LayerBlend edge wear hidden by mask x gain; `None` shows the authored edge wear |
+| `WEAR_STRENGTH_OVERRIDE` | None | replaces the scene's Wear Strength (0-2) for two-layer wear materials |
+| `POM_SCALE_MULTIPLIER`, `POM_SCALE_MAX` | 30.0, 3.0 | parallax depth from PomDisplacement, capped |
+| `LIGHT_VISUAL_GAIN`, `SC_LIGHT_CANDELA_SCALE`, `HEADLIGHT_GOBO_THROW_GAIN` | 20.0, 1500.0, 10.0 | light brightness |
+| `SKIN_SUBSURFACE_RADIUS`, `SKIN_SUBSURFACE_SCALE`, `SKIN_TRANSMITTANCE_SCALE_GAIN` | (1, 0.35, 0.2), 0.004, 4.0 | HumanSkin subsurface |
+| `HAIR_DIFFUSE_SCALE` | 0.5 | HairPBR diffuse energy |
+
+LayerBlend blend-map materials leave their wear layers out entirely; dynamic
+wear there would be a new shader feature, not a knob.
 
 ## Deploy (rsync)
 

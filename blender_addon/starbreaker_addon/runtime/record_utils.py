@@ -324,23 +324,24 @@ def _emissive_opacity_factor(submaterial: SubmaterialRecord) -> float:
         return 1.0
 
 
-def _organic_base_tint(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
+def _organic_base_tint(submaterial: SubmaterialRecord, *, gain: float) -> tuple[float, float, float] | None:
     """Colour of an ``Organic`` material (minerals such as Hadanite).
 
     Its diffuse is grey; the colour is the first layer's ``TintColor`` (the
     crystal, the second layer is grey sand), which the principled build would
     otherwise drop, times that layer material's own ``Diffuse``: Beradom's
     tint is white, its violet is crystal_beradom.mtl's Diffuse (0.15, 0.125,
-    0.342), and it rendered grey. Doubled for the grey diffuse, a detail map
-    (sRGB ~100): at x1 every mineral came out darker than the game's
-    inventory tiles.
+    0.342), and it rendered grey. Times ``gain`` (the builder passes the look
+    knob ``ORGANIC_TINT_GAIN``, x2) for the grey diffuse, a detail map (sRGB
+    ~100): at x1 every mineral came out darker than the game's inventory
+    tiles.
     """
     if submaterial.shader_family != "Organic" or not submaterial.layer_manifest:
         return None
     layer = submaterial.layer_manifest[0]
     tint = layer.tint_color or (1.0, 1.0, 1.0)
     diffuse = layer.layer_snapshot.get("diffuse") or (1.0, 1.0, 1.0)
-    return tuple(2.0 * float(t) * float(d) for t, d in zip(tint, diffuse))  # type: ignore[return-value]
+    return tuple(gain * float(t) * float(d) for t, d in zip(tint, diffuse))  # type: ignore[return-value]
 
 
 def _layer_blend_wear_texture(submaterial: SubmaterialRecord) -> TextureReference | None:

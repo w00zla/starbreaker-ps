@@ -539,7 +539,7 @@ class TestOrganicBaseTint(unittest.TestCase):
                 ],
             }
         )
-        for got, want in zip(_organic_base_tint(hadanite), (0.74, 0.42, 0.62)):
+        for got, want in zip(_organic_base_tint(hadanite, gain=2.0), (0.74, 0.42, 0.62)):
             self.assertAlmostEqual(got, want)
 
     def test_organic_tint_includes_the_layer_material_diffuse(self) -> None:
@@ -557,7 +557,7 @@ class TestOrganicBaseTint(unittest.TestCase):
                 ],
             }
         )
-        for got, want in zip(_organic_base_tint(beradom), (0.30, 0.25, 0.684)):
+        for got, want in zip(_organic_base_tint(beradom, gain=2.0), (0.30, 0.25, 0.684)):
             self.assertAlmostEqual(got, want)
 
     def test_organic_specular_is_the_layer_material_specular(self) -> None:
@@ -589,10 +589,10 @@ class TestOrganicBaseTint(unittest.TestCase):
         hull = SubmaterialRecord.from_value(
             {"shader_family": "HardSurface", "layer_manifest": [{"index": 0, "tint_color": [0.5, 0.5, 0.5]}]}
         )
-        self.assertIsNone(_organic_base_tint(hull))
+        self.assertIsNone(_organic_base_tint(hull, gain=2.0))
 
     def test_organic_without_layers_gets_no_tint(self) -> None:
-        self.assertIsNone(_organic_base_tint(SubmaterialRecord.from_value({"shader_family": "Organic"})))
+        self.assertIsNone(_organic_base_tint(SubmaterialRecord.from_value({"shader_family": "Organic"}), gain=2.0))
 
 
 class TestLayerBlendWearTexture(unittest.TestCase):

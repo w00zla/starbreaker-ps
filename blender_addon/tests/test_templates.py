@@ -17,7 +17,6 @@ from dataclasses import replace
 
 from starbreaker_addon.templates import (
     GLASS_TINT_HUE,
-    MONITOR_ROUGHNESS,
     active_submaterials,
     glass_refraction_gloss,
     glass_tints_from_palette,
@@ -226,15 +225,15 @@ class TemplateTests(unittest.TestCase):
             raw={"authored_attributes": [
                 {"name": "Emissive", "value": "0.93011099,0.30946895,0.022173885"}, {"name": "Glow", "value": "0.18"}]},
         )
-        color = layer_blend_glow_color(face)
+        color = layer_blend_glow_color(face, tint_weight=0.5)
         self.assertAlmostEqual(color[0], 0.93011099, places=5)
         self.assertAlmostEqual(color[1], 0.12075, places=4)
         self.assertAlmostEqual(color[2], 0.0, places=6)
         # A glowing layer without a tint keeps Emissive.
         untinted = replace(face, flat_layers=[replace(layer("BaseLayer1"), flat=True, tint_color=None)])
-        self.assertEqual(layer_blend_glow_color(untinted), (0.93011099, 0.30946895, 0.022173885))
+        self.assertEqual(layer_blend_glow_color(untinted, tint_weight=0.5), (0.93011099, 0.30946895, 0.022173885))
         # Nothing glows: no colour.
-        self.assertIsNone(layer_blend_glow_color(replace(face, flat_layers=[])))
+        self.assertIsNone(layer_blend_glow_color(replace(face, flat_layers=[]), tint_weight=0.5))
 
     def test_layer_blend_decals_take_the_decal_sheet(self) -> None:
         sheet = TextureReference(role="decal_sheet", source_path=None, export_path="t/sheet.png", export_kind="source", slot="TexSlot9")
@@ -418,7 +417,6 @@ class TemplateTests(unittest.TestCase):
         dark = replace(synthetic_submaterial("Monitor"), raw={"authored_attributes": [{"name": "Specular", "value": "0,0,0"}]})
         self.assertIsNone(monitor_specular(dark))
         self.assertIsNone(monitor_specular(replace(synthetic_submaterial("HardSurface"), raw=eye.raw)))
-        self.assertEqual(MONITOR_ROUGHNESS, 0.35)
 
     def test_glass_refraction_gloss_zero_is_clear(self) -> None:
         # The Dark Bear's eye lenses author RefractionGloss 0 and look clear in game; taken as frosted they hid the

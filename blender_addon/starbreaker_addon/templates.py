@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 
 from .manifest import LayerManifestEntry, PaletteChannel, SubmaterialRecord, TextureReference
@@ -29,9 +28,6 @@ OPACITY_ROLES = ("opacity",)
 # Hue of the GlassPBR template's tint node; 0.5 leaves the tint as authored (0.57 turned every glass by +25°: the
 # Strata microTech's lime visor drew teal).
 GLASS_TINT_HUE = 0.5
-# Roughness of a Monitor's reflecting surface: the material authors no gloss; 0.35 matched the Dark Bear's silver
-# eyeballs in the inventory tile (0.15 mirror-like, 0.6 matt).
-MONITOR_ROUGHNESS = 0.35
 
 
 def active_submaterials(submaterials: list[SubmaterialRecord]) -> list[SubmaterialRecord]:
@@ -408,13 +404,16 @@ def glass_refraction_gloss(value: float) -> float:
     return 1.0 if value == 0.0 else value
 
 
-def layer_blend_glow_color(submaterial: SubmaterialRecord) -> tuple[float, float, float] | None:
-    """The colour the glowing slots emit: the geometric mean of `Emissive` and the glowing layer's tint, the tint
-    scaled to Emissive's peak; Emissive alone when that layer has no tint, None when nothing glows.
+def layer_blend_glow_color(
+    submaterial: SubmaterialRecord, *, tint_weight: float
+) -> tuple[float, float, float] | None:
+    """The colour the glowing slots emit: the weighted geometric mean `Emissive^(1-w) * tint^w` of `Emissive` and the
+    glowing layer's tint, the tint scaled to Emissive's peak, w = `tint_weight` (the builder passes the look knob
+    `LAYER_BLEND_GLOW_TINT_WEIGHT`); Emissive alone when that layer has no tint, None when nothing glows.
 
     Fitted, not derived (no shader source): the Chairman's Club's eye strip has Emissive orange (R/G 3.0) and a deep
-    red tint (R/G 19.7); the inventory tile shows R/G about 7, the mean gives it (210/84/33 sRGB against the tile's
-    196/79/39), Emissive alone drew it yellowish.
+    red tint (R/G 19.7); the inventory tile shows R/G about 7, the plain mean (w 0.5) gives it (210/84/33 sRGB against
+    the tile's 196/79/39), Emissive alone drew it yellowish.
     """
     glow_slots = layer_blend_glow_slots(submaterial)
     if not glow_slots:
@@ -427,7 +426,8 @@ def layer_blend_glow_color(submaterial: SubmaterialRecord) -> tuple[float, float
     if tint is None or max(tint) <= 0.0:
         return emissive
     scale = max(emissive) / max(tint)
-    return tuple(math.sqrt(e * t * scale) for e, t in zip(emissive, tint))  # type: ignore[return-value]
+    w = tint_weight
+    return tuple(e ** (1.0 - w) * (t * scale) ** w for e, t in zip(emissive, tint))  # type: ignore[return-value]
 
 
 def smoothness_texture_reference(submaterial: SubmaterialRecord) -> TextureReference | None:

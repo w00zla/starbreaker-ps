@@ -27,8 +27,6 @@ from ..constants import (
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
-    POM_SCALE_MAX,
-    POM_SCALE_MULTIPLIER,
     PROP_DECAL_HOST_CHANNEL,
     PROP_DECAL_HOST_RGB,
     PROP_MATERIAL_IDENTITY,
@@ -46,6 +44,7 @@ from ..constants import (
     SURFACE_SHADER_MODE_PRINCIPLED,
     pom_detail_settings,
 )
+from .. import constants
 from ..node_utils import _input_socket, _output_socket, _refresh_group_node_sockets, _set_group_input_default
 from ..package_ops import _string_prop
 from ..record_utils import (
@@ -87,7 +86,6 @@ from ...palette import (
 )
 from ...templates import (
     GLASS_TINT_HUE,
-    MONITOR_ROUGHNESS,
     glass_refraction_gloss,
     layer_blend_decal_sheet,
     layer_blend_glow_color,
@@ -201,7 +199,7 @@ def _metal_tint_times_specular(
     # specular; the tint's blue takes them to the rose copper of the shop
     # shots. A real tint is brighter -- the Zeus visor's 0.07/0.02/1.0 turns
     # its gold violet, the Ghost Mk II's 0.138 greys its aluminium.
-    if max(tint) < 0.1:
+    if max(tint) < constants.METAL_TINT_HUE_ONLY_BELOW:
         if max(tint) <= 1e-6:
             return specular
         return tuple(t / max(tint) * s for t, s in zip(tint, specular))  # type: ignore[return-value]
@@ -549,7 +547,8 @@ class BuildersMixin:
         # reference plane: the authored HeightBias, else the height-map
         # background so the mid-level sits flush.
         self._set_socket_default(
-            _input_socket(parallax_node, "Scale"), min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER)
+            _input_socket(parallax_node, "Scale"),
+            min(constants.POM_SCALE_MAX, scale_value * constants.POM_SCALE_MULTIPLIER),
         )
         self._set_socket_default(
             _input_socket(parallax_node, "Bias"), self._resolve_parallax_bias(bias_value, height_node)
@@ -770,6 +769,29 @@ class BuildersMixin:
         mix.inputs[2].default_value = (*tint, 1.0)
         self._link_color_output(color_socket, mix.inputs[1])
         return mix.outputs[0]
+
+    def _monitor_surface_shader(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        surface_shader: Any,
+    ) -> Any:
+        """A Monitor is a glossy screen, not only light: its Specular reflects (the Dark Bear's eyeballs are silver
+        around the glowing pupils; emission and transparency alone drew them black). Others unchanged."""
+        monitor_reflect = monitor_specular(submaterial)
+        if monitor_reflect is None:
+            return surface_shader
+        glossy = nodes.new("ShaderNodeBsdfGlossy")
+        glossy.label = "Monitor Surface"
+        glossy.location = (400, -460)
+        glossy.inputs["Color"].default_value = (*monitor_reflect, 1.0)
+        glossy.inputs["Roughness"].default_value = constants.MONITOR_ROUGHNESS
+        add_glossy = nodes.new("ShaderNodeAddShader")
+        add_glossy.location = (720, -40)
+        links.new(surface_shader, add_glossy.inputs[0])
+        links.new(glossy.outputs[0], add_glossy.inputs[1])
+        return add_glossy.outputs[0]
 
     def _patch_glass_template_lightpath(self, group: bpy.types.ShaderNodeTree) -> None:
         """Patch the bundled GlassPBR template to the live validated graph.
@@ -1470,20 +1492,7 @@ class BuildersMixin:
                 links.new(emission.outputs[0], add_shader.inputs[1])
                 surface_shader = add_shader.outputs[0]
 
-        # A Monitor is a glossy screen, not only light: its Specular reflects (the Dark Bear's eyeballs are silver
-        # around the glowing pupils; emission and transparency alone drew them black).
-        monitor_reflect = monitor_specular(submaterial)
-        if monitor_reflect is not None:
-            glossy = nodes.new("ShaderNodeBsdfGlossy")
-            glossy.label = "Monitor Surface"
-            glossy.location = (400, -460)
-            glossy.inputs["Color"].default_value = (*monitor_reflect, 1.0)
-            glossy.inputs["Roughness"].default_value = MONITOR_ROUGHNESS
-            add_glossy = nodes.new("ShaderNodeAddShader")
-            add_glossy.location = (720, -40)
-            links.new(surface_shader, add_glossy.inputs[0])
-            links.new(glossy.outputs[0], add_glossy.inputs[1])
-            surface_shader = add_glossy.outputs[0]
+        surface_shader = self._monitor_surface_shader(nodes, links, submaterial, surface_shader)
 
         # Mesh decals float up to a few cm over the hull (the F8C's livery
         # stripes sit 2 cm up); in game they are blended into the surface and
@@ -2774,7 +2783,7 @@ class BuildersMixin:
                     links.new(socket, target)
             # The glowing slots emit at `Glow` (as the contract groups without an
             # emission input do), only where they lie, in `layer_blend_glow_color`.
-            emissive = layer_blend_glow_color(submaterial)
+            emissive = layer_blend_glow_color(submaterial, tint_weight=constants.LAYER_BLEND_GLOW_TINT_WEIGHT)
             color_target = _input_socket(principled_group, "Emission Color")
             strength_target = _input_socket(principled_group, "Emission Strength")
             if glow_mask is not None and emissive is not None and color_target is not None and strength_target is not None:
@@ -2916,43 +2925,9 @@ class BuildersMixin:
         decode.location = (x - 100, y + 250)
         decode.inputs["Gamma"].default_value = 2.2
         links.new(blend_node.outputs[0], decode.inputs["Color"])
-        blend_color = decode.outputs[0]
-        # Red, the top layer, is partly edge wear: the Morozov-SH helmet's
-        # plate edges and seams pick its white layer 1 where its wear mask
-        # (TexSlot11) is dark, and the shop shots have none of it. Weighting
-        # red by the mask keeps the pristine item; on the ADP-mk4, whose
-        # red is paint under a light mask, 87% of it stays.
-        wear_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot11",), roles=("wear_mask",))
-        wear_node = self._image_node(
-            nodes, wear_ref.export_path if wear_ref is not None else None, x=x - 300, y=y + 600, is_color=False
+        blend_color = self._layer_blend_unworn(
+            nodes, links, submaterial, decode.outputs[0], blend_tiling, x=x, y=y
         )
-        if wear_node is not None:
-            if not wear_node.inputs["Vector"].is_linked:
-                self._apply_uv_tiling(nodes, links, wear_node, blend_tiling, x=x - 600, y=y + 600)
-            split = nodes.new("ShaderNodeSeparateColor")
-            split.location = (x - 100, y + 400)
-            links.new(blend_color, split.inputs[0])
-            red = nodes.new("ShaderNodeMath")
-            red.operation = "MULTIPLY"
-            red.location = (x + 50, y + 500)
-            links.new(split.outputs[0], red.inputs[0])
-            # Only the darkest mask lets the layer below through: scaled
-            # linearly, the Ace Interceptor's speckled mask (a quarter of it
-            # near black) turned half the dark shell into white flecks. The
-            # shop shot has fine scratches, which is what x4 leaves.
-            sharp = nodes.new("ShaderNodeMath")
-            sharp.operation = "MULTIPLY"
-            sharp.use_clamp = True
-            sharp.location = (x - 100, y + 600)
-            sharp.inputs[1].default_value = 4.0
-            links.new(wear_node.outputs["Color"], sharp.inputs[0])
-            links.new(sharp.outputs[0], red.inputs[1])
-            join = nodes.new("ShaderNodeCombineColor")
-            join.location = (x + 50, y + 350)
-            links.new(red.outputs[0], join.inputs[0])
-            links.new(split.outputs[1], join.inputs[1])
-            links.new(split.outputs[2], join.inputs[2])
-            blend_color = join.outputs[0]
         links.new(blend_color, _input_socket(group, "Blend Color"))
 
         for index, layer in slots.items():
@@ -3008,6 +2983,62 @@ class BuildersMixin:
             _output_socket(group, "Metallic"),
             glow_mask,
         )
+
+    def _layer_blend_unworn(
+        self,
+        nodes: bpy.types.Nodes,
+        links: bpy.types.NodeLinks,
+        submaterial: SubmaterialRecord,
+        blend_color: Any,
+        blend_tiling: float,
+        *,
+        x: int,
+        y: int,
+    ) -> Any:
+        """The decoded blend colour with the edge wear taken out of its red.
+
+        Red, the top layer, is partly edge wear: the Morozov-SH helmet's
+        plate edges and seams pick its white layer 1 where its wear mask
+        (TexSlot11) is dark, and the shop shots have none of it. Weighting
+        red by the mask keeps the pristine item; on the ADP-mk4, whose
+        red is paint under a light mask, 87% of it stays. Unchanged without
+        a mask or with the look knob ``LAYER_BLEND_WEAR_MASK_GAIN`` None.
+        """
+        gain = constants.LAYER_BLEND_WEAR_MASK_GAIN
+        if gain is None:
+            return blend_color
+        wear_ref = _submaterial_texture_reference(submaterial, slots=("TexSlot11",), roles=("wear_mask",))
+        wear_node = self._image_node(
+            nodes, wear_ref.export_path if wear_ref is not None else None, x=x - 300, y=y + 600, is_color=False
+        )
+        if wear_node is None:
+            return blend_color
+        if not wear_node.inputs["Vector"].is_linked:
+            self._apply_uv_tiling(nodes, links, wear_node, blend_tiling, x=x - 600, y=y + 600)
+        split = nodes.new("ShaderNodeSeparateColor")
+        split.location = (x - 100, y + 400)
+        links.new(blend_color, split.inputs[0])
+        red = nodes.new("ShaderNodeMath")
+        red.operation = "MULTIPLY"
+        red.location = (x + 50, y + 500)
+        links.new(split.outputs[0], red.inputs[0])
+        # Only the darkest mask lets the layer below through: scaled
+        # linearly, the Ace Interceptor's speckled mask (a quarter of it
+        # near black) turned half the dark shell into white flecks. The
+        # shop shot has fine scratches, which is what x4 leaves.
+        sharp = nodes.new("ShaderNodeMath")
+        sharp.operation = "MULTIPLY"
+        sharp.use_clamp = True
+        sharp.location = (x - 100, y + 600)
+        sharp.inputs[1].default_value = gain
+        links.new(wear_node.outputs["Color"], sharp.inputs[0])
+        links.new(sharp.outputs[0], red.inputs[1])
+        join = nodes.new("ShaderNodeCombineColor")
+        join.location = (x + 50, y + 350)
+        links.new(red.outputs[0], join.inputs[0])
+        links.new(split.outputs[1], join.inputs[1])
+        links.new(split.outputs[2], join.inputs[2])
+        return join.outputs[0]
 
     def _layer_blend_decal_sockets(
         self,
@@ -3348,7 +3379,7 @@ class BuildersMixin:
         if base_socket is None and palette is not None and plan.uses_palette:
             primary = self._palette_color_socket(nodes, palette, "primary", x=80, y=120)
             base_socket = primary
-        organic_tint = _organic_base_tint(submaterial)
+        organic_tint = _organic_base_tint(submaterial, gain=constants.ORGANIC_TINT_GAIN)
         if organic_tint is not None and base_socket is not None:
             tint_socket = self._value_color_socket(nodes, (*organic_tint, 1.0), x=40, y=300)
             base_socket = self._multiply_color_socket(nodes, links, base_socket, tint_socket, x=220, y=140)
