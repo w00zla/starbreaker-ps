@@ -58,6 +58,8 @@ class AlphaTestTests(unittest.TestCase):
 
     def test_pom_decals_keep_their_alpha(self) -> None:
         pom_decal = _submaterial("Illum", "%DECAL%PARALLAX_OCCLUSION_MAPPING", None)
+        # A drawn decal has an authored Opacity; without one it is switched off (nodraw).
+        pom_decal.raw["authored_attributes"].append({"name": "Opacity", "value": "1"})
         plan = template_plan_for_submaterial(pom_decal)
         self.assertEqual(plan.template_key, "decal_stencil")
         self.assertTrue(plan.uses_alpha)

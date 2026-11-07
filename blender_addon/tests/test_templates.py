@@ -331,6 +331,7 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(livery_decal.activation_reason, "missing_base_color_texture")
         self.assertEqual(template_plan_for_submaterial(livery_decal).template_key, "nodraw")
 
+    @unittest.skipUnless(COMPONENT_MASTER.is_file(), "component_master fixture not present; skipping")
     def test_representative_textures_pick_exportable_maps(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
         hard_surface = next(submaterial for submaterial in component.submaterials if submaterial.shader_family == "HardSurface")
@@ -356,6 +357,7 @@ class TemplateTests(unittest.TestCase):
         textures = representative_textures(decal)
         self.assertEqual(textures["opacity"], "Data/Textures/test/decal_diff.png")
 
+    @unittest.skipUnless(COMPONENT_MASTER.is_file(), "component_master fixture not present; skipping")
     def test_smoothness_texture_reference_falls_back_to_layer_texture_slots(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
         layered_hard_surface = next(
