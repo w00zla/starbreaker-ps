@@ -1,0 +1,2086 @@
+{
+ "format": 1,
+ "library": "screen_effects_library.blend",
+ "materials": {},
+ "node_groups": {
+  "Pixelate": {
+   "interface": [
+    {
+     "default_input": "VALUE",
+     "default_value": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "description": "",
+     "dimensions": 3,
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_1",
+     "in_out": "OUTPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 3.4028234663852886e+38,
+     "menu_expanded": false,
+     "min_value": -3.4028234663852886e+38,
+     "name": "Vector",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketVector"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "description": "",
+     "dimensions": 3,
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_7",
+     "in_out": "OUTPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "Vector Passthrough",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketVector"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 0.5,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_4",
+     "in_out": "OUTPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "X Pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 0.5,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_5",
+     "in_out": "OUTPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "Y Pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "description": "",
+     "dimensions": 3,
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_0",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "Vector",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketVector"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 0.5,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_2",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "X Pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 0.5,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_3",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "Y Pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": false,
+     "description": "Downscale the image",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_6",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "menu_expanded": false,
+     "name": "pixelate",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "type": "NodeSocketBool"
+    }
+   ],
+   "links": [
+    "Combine XYZ.001:Vector -> Mix:B_Vector",
+    "Group Input:Socket_0 -> Group Output:Socket_7",
+    "Group Input:Socket_0 -> Mix:A_Vector",
+    "Group Input:Socket_0 -> Separate XYZ:Vector",
+    "Group Input:Socket_2 -> Group Output:Socket_4",
+    "Group Input:Socket_2 -> Maths.006:Value_001",
+    "Group Input:Socket_3 -> Group Output:Socket_5",
+    "Group Input:Socket_3 -> Maths.008:Value_001",
+    "Group Input:Socket_6 -> Mix:Factor_Float",
+    "Maths.005:Value -> Combine XYZ.001:X",
+    "Maths.006:Value -> Maths.005:Value_001",
+    "Maths.007:Value -> Combine XYZ.001:Y",
+    "Maths.008:Value -> Maths.007:Value_001",
+    "Mix:Result_Vector -> Group Output:Socket_1",
+    "Separate XYZ:X -> Maths.005:Value",
+    "Separate XYZ:Y -> Maths.007:Value"
+   ],
+   "nodes": [
+    {
+     "inputs": [
+      {
+       "identifier": "X",
+       "name": "X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Y",
+       "name": "Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Z",
+       "name": "Z",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Combine XYZ.001",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "type": "ShaderNodeCombineXYZ"
+    },
+    {
+     "inputs": [],
+     "name": "Group Input",
+     "outputs": [
+      {
+       "identifier": "Socket_0",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Socket_2",
+       "name": "X Pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_3",
+       "name": "Y Pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_6",
+       "name": "pixelate",
+       "type": "NodeSocketBool"
+      },
+      {
+       "identifier": "__extend__",
+       "name": "",
+       "type": "NodeSocketVirtual"
+      }
+     ],
+     "type": "NodeGroupInput"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Socket_1",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Socket_7",
+       "name": "Vector Passthrough",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Socket_4",
+       "name": "X Pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_5",
+       "name": "Y Pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "__extend__",
+       "name": "",
+       "type": "NodeSocketVirtual"
+      }
+     ],
+     "name": "Group Output",
+     "outputs": [],
+     "type": "NodeGroupOutput"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.005",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "SNAP",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "inputs": [
+      {
+       "default": 1.0,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.006",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "DIVIDE",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.007",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "SNAP",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "inputs": [
+      {
+       "default": 1.0,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.008",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "DIVIDE",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5,
+        1.0
+       ],
+       "enabled": false,
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5,
+        1.0
+       ],
+       "enabled": false,
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.8,
+        0.8,
+        0.8,
+        1.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MIX",
+      "clamp_factor": true,
+      "clamp_result": false,
+      "data_type": "VECTOR",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "name": "Separate XYZ",
+     "outputs": [
+      {
+       "identifier": "X",
+       "name": "X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Y",
+       "name": "Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Z",
+       "name": "Z",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "type": "ShaderNodeSeparateXYZ"
+    }
+   ],
+   "type": "ShaderNodeTree",
+   "uses_groups": []
+  },
+  "RGB_grid": {
+   "interface": [
+    {
+     "default_input": "VALUE",
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_24",
+     "in_out": "OUTPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "menu_expanded": false,
+     "name": "Shader",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "type": "NodeSocketShader"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": [
+      0.5,
+      0.5,
+      0.5,
+      1.0
+     ],
+     "description": "Value of the second color input",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_30",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "menu_expanded": false,
+     "name": "Image",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "type": "NodeSocketColor"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "description": "",
+     "dimensions": 3,
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Input_1",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 1.0,
+     "menu_expanded": false,
+     "min_value": -1.0,
+     "name": "Vector",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketVector"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 800.0,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_22",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "X pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 600.0,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_23",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 10000.0,
+     "menu_expanded": false,
+     "min_value": -10000.0,
+     "name": "Y pixels",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 1.0,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_31",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 1000000.0,
+     "menu_expanded": false,
+     "min_value": 0.0,
+     "name": "Strength",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    }
+   ],
+   "links": [
+    "Brick Texture:Color -> Mix:A_Color",
+    "Combine XYZ:Vector -> Mapping.005:Scale",
+    "Emission:Emission -> Group Output:Socket_24",
+    "Group Input:Input_1 -> Mapping.005:Vector",
+    "Group Input:Socket_22 -> Combine XYZ:X",
+    "Group Input:Socket_23 -> Combine XYZ:Y",
+    "Group Input:Socket_30 -> Mix.001:B_Color",
+    "Group Input:Socket_31 -> Emission:Strength",
+    "Mapping.005:Vector -> Vector Maths:Vector",
+    "Maths.001:Value -> Maths.003:Value",
+    "Maths.002:Value -> Maths.003:Value_001",
+    "Maths.003:Value -> Mix.006:Factor_Float",
+    "Maths.004:Value -> Mix.007:Factor_Float",
+    "Maths:Value -> Mix.005:A_Color",
+    "Mix.001:Result_Color -> Emission:Color",
+    "Mix.005:Result_Color -> Mix.006:A_Color",
+    "Mix.006:Result_Color -> Mix.007:A_Color",
+    "Mix.007:Result_Color -> Mix:B_Color",
+    "Mix:Result_Color -> Mix.001:A_Color",
+    "Separate XYZ.001:X -> Maths.001:Value",
+    "Separate XYZ.001:X -> Maths.002:Value",
+    "Separate XYZ.001:X -> Maths.004:Value",
+    "Separate XYZ.001:X -> Maths:Value",
+    "Vector Maths:Vector -> Brick Texture:Vector",
+    "Vector Maths:Vector -> Separate XYZ.001:Vector"
+   ],
+   "nodes": [
+    {
+     "frame": "Frame.001",
+     "inputs": [
+      {
+       "hide_value": true,
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.8,
+        0.8,
+        0.8,
+        1.0
+       ],
+       "identifier": "Color1",
+       "name": "Color1",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+       ],
+       "identifier": "Color2",
+       "name": "Color2",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+       ],
+       "identifier": "Mortar",
+       "name": "Mortar",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": 1.0,
+       "identifier": "Scale",
+       "name": "Scale",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.02,
+       "identifier": "Mortar Size",
+       "name": "Mortar Size",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.1,
+       "identifier": "Mortar Smooth",
+       "name": "Mortar Smooth",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Bias",
+       "name": "Bias",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.333333,
+       "identifier": "Brick Width",
+       "name": "Brick Width",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 1.0,
+       "identifier": "Row Height",
+       "name": "Row Height",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Brick Texture",
+     "outputs": [
+      {
+       "identifier": "Color",
+       "name": "Color",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Fac",
+       "name": "Factor",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "color_mapping": {
+       "blend_color": [
+        0.8,
+        0.8,
+        0.8
+       ],
+       "blend_factor": 0.0,
+       "blend_type": "MIX",
+       "brightness": 1.0,
+       "color_ramp": {
+        "color_mode": "RGB",
+        "elements": [
+         {
+          "color": [
+           0.0,
+           0.0,
+           0.0,
+           1.0
+          ],
+          "position": 0.0
+         },
+         {
+          "color": [
+           1.0,
+           1.0,
+           1.0,
+           1.0
+          ],
+          "position": 1.0
+         }
+        ],
+        "hue_interpolation": "NEAR",
+        "interpolation": "LINEAR"
+       },
+       "contrast": 1.0,
+       "saturation": 1.0,
+       "struct": "ColorMapping",
+       "use_color_ramp": false
+      },
+      "offset": 1.0,
+      "offset_frequency": 2,
+      "squash": 1.0,
+      "squash_frequency": 2,
+      "texture_mapping": {
+       "mapping": "FLAT",
+       "mapping_x": "X",
+       "mapping_y": "Y",
+       "mapping_z": "Z",
+       "max": [
+        1.0,
+        1.0,
+        1.0
+       ],
+       "min": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "rotation": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "scale": [
+        1.0,
+        1.0,
+        1.0
+       ],
+       "struct": "TexMapping",
+       "translation": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "use_max": false,
+       "use_min": false,
+       "vector_type": "POINT"
+      }
+     },
+     "type": "ShaderNodeTexBrick"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "X",
+       "name": "X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Y",
+       "name": "Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 1.0,
+       "identifier": "Z",
+       "name": "Z",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Combine XYZ",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "type": "ShaderNodeCombineXYZ"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Color",
+       "name": "Color",
+       "type": "NodeSocketColor"
+      },
+      {
+       "identifier": "Strength",
+       "name": "Strength",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Weight",
+       "name": "Weight",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Emission",
+     "outputs": [
+      {
+       "identifier": "Emission",
+       "name": "Emission",
+       "type": "NodeSocketShader"
+      }
+     ],
+     "type": "ShaderNodeEmission"
+    },
+    {
+     "inputs": [],
+     "label": "RGB",
+     "name": "Frame",
+     "outputs": [],
+     "settings": {
+      "label_size": 20,
+      "shrink": true,
+      "text": null
+     },
+     "type": "NodeFrame"
+    },
+    {
+     "inputs": [],
+     "label": "Black lines",
+     "name": "Frame.001",
+     "outputs": [],
+     "settings": {
+      "label_size": 20,
+      "shrink": true,
+      "text": null
+     },
+     "type": "NodeFrame"
+    },
+    {
+     "inputs": [],
+     "name": "Group Input",
+     "outputs": [
+      {
+       "identifier": "Socket_30",
+       "name": "Image",
+       "type": "NodeSocketColor"
+      },
+      {
+       "identifier": "Input_1",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Socket_22",
+       "name": "X pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_23",
+       "name": "Y pixels",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_31",
+       "name": "Strength",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "__extend__",
+       "name": "",
+       "type": "NodeSocketVirtual"
+      }
+     ],
+     "type": "NodeGroupInput"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Socket_24",
+       "name": "Shader",
+       "type": "NodeSocketShader"
+      },
+      {
+       "identifier": "__extend__",
+       "name": "",
+       "type": "NodeSocketVirtual"
+      }
+     ],
+     "name": "Group Output",
+     "outputs": [],
+     "type": "NodeGroupOutput"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "identifier": "Location",
+       "name": "Location",
+       "type": "NodeSocketVectorTranslation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "identifier": "Rotation",
+       "name": "Rotation",
+       "type": "NodeSocketVectorEuler"
+      },
+      {
+       "identifier": "Scale",
+       "name": "Scale",
+       "type": "NodeSocketVectorXYZ"
+      }
+     ],
+     "name": "Mapping.005",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "settings": {
+      "vector_type": "POINT"
+     },
+     "type": "ShaderNodeMapping"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.333333,
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "LESS_THAN",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.333333,
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.001",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "GREATER_THAN",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.666667,
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.002",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "LESS_THAN",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.003",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "MULTIPLY",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.666667,
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Maths.004",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "GREATER_THAN",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
+     "frame": "Frame.001",
+     "inputs": [
+      {
+       "default": 1.0,
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MULTIPLY",
+      "clamp_factor": true,
+      "clamp_result": false,
+      "data_type": "RGBA",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "inputs": [
+      {
+       "default": 1.0,
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix.001",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MULTIPLY",
+      "clamp_factor": false,
+      "clamp_result": false,
+      "data_type": "RGBA",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "default": 1.0,
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        1.0,
+        0.0,
+        0.0,
+        1.0
+       ],
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix.005",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MULTIPLY",
+      "clamp_factor": true,
+      "clamp_result": false,
+      "data_type": "RGBA",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        1.0,
+        0.0,
+        1.0
+       ],
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix.006",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MIX",
+      "clamp_factor": true,
+      "clamp_result": false,
+      "data_type": "RGBA",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "frame": "Frame",
+     "inputs": [
+      {
+       "identifier": "Factor_Float",
+       "name": "Factor",
+       "type": "NodeSocketFloatFactor"
+      },
+      {
+       "default": [
+        0.5,
+        0.5,
+        0.5
+       ],
+       "enabled": false,
+       "identifier": "Factor_Vector",
+       "name": "Factor",
+       "type": "NodeSocketVectorFactor"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "A_Float",
+       "name": "A",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "B_Float",
+       "name": "B",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Vector",
+       "name": "A",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Vector",
+       "name": "B",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "A_Color",
+       "name": "A",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        1.0,
+        1.0
+       ],
+       "identifier": "B_Color",
+       "name": "B",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "A_Rotation",
+       "name": "A",
+       "type": "NodeSocketRotation"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "B_Rotation",
+       "name": "B",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "name": "Mix.007",
+     "outputs": [
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Result_Float",
+       "name": "Result",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Vector",
+       "name": "Result",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Result_Color",
+       "name": "Result",
+       "type": "NodeSocketColor"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Result_Rotation",
+       "name": "Result",
+       "type": "NodeSocketRotation"
+      }
+     ],
+     "settings": {
+      "blend_type": "MIX",
+      "clamp_factor": true,
+      "clamp_result": false,
+      "data_type": "RGBA",
+      "factor_mode": "UNIFORM"
+     },
+     "type": "ShaderNodeMix"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "name": "Separate XYZ.001",
+     "outputs": [
+      {
+       "identifier": "X",
+       "name": "X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Y",
+       "name": "Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Z",
+       "name": "Z",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "type": "ShaderNodeSeparateXYZ"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        1.0,
+        1.0,
+        1.0
+       ],
+       "identifier": "Vector_001",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Vector_002",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 1.0,
+       "enabled": false,
+       "identifier": "Scale",
+       "name": "Scale",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "name": "Vector Maths",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "MODULO"
+     },
+     "type": "ShaderNodeVectorMath"
+    }
+   ],
+   "type": "ShaderNodeTree",
+   "uses_groups": []
+  }
+ }
+}
