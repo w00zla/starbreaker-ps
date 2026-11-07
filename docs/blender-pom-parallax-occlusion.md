@@ -120,16 +120,26 @@ The functional Bias is what lets `Scale` grow without the mid-level swimming.
    tangent of the render UV map (`Tangent.uv_map` empty). Both halves must be
    present: the `Attribute`+`Multiply` in `tangent_space` **and** the
    attribute on the *rendered* mesh. The exporter writes it into every Blend-format
-   mesh with a tangent stream (the game's handedness, negated for the V flip; see
-   the export contract), so the meshes a `scene.blend` links carry it (packshot's
-   path: linked meshes are read-only, the load-post refresh cannot bake). The
-   add-on bakes Blender's MikkTSpace sign when it imports a package (template
-   loader, which overwrites the exported one, then
-   `_bake_pom_mesh_bitangent_signs` for meshes still without it). Without the
-   attribute the `Attribute` node reads 0 and the vertical parallax is zero on
-   every face: on the Scourge that was ~5 % of the pixels (oblique view).
+   mesh with UVs (MikkTSpace's sign computed from the UVs; see the export
+   contract), so the meshes a `scene.blend` links carry it (packshot's path:
+   linked meshes are read-only, the load-post refresh cannot bake). The add-on
+   bakes Blender's MikkTSpace sign when it imports a package (template loader,
+   which overwrites the exported one, then `_bake_pom_mesh_bitangent_signs` for
+   meshes still without it); both agree on 99.89–100 % of the corners. Without
+   the attribute the `Attribute` node reads 0 and the vertical parallax is zero
+   on every face: on the Scourge that was ~5 % of the pixels (oblique view).
    Check the attribute against `mesh.calc_tangents()` / `loop.bitangent_sign`
    on a local copy of the mesh.
+
+   **Note:** the exporter takes the sign from the UVs, not from the game's
+   tangent frame, because the add-on pairs it with Blender's MikkTSpace tangent
+   from the UVs. The game's handedness matched on 98.7–99.9 % of the corners of
+   weapons and helmets, but on worn armour cores 5–10 % of the corners carry a game
+   sign against their UV orientation (cds heavy core 90.2 %, cds superheavy suit
+   94.6 %, ccc shrike 94.7 % agreement; mostly whole faces, not seams; mirrored
+   transforms and flipped winding ruled out; cause unknown). The game data is the
+   alternative if that ever matters (e.g. normal maps baked against the game's
+   frame); `bitangent_signs.rs` has the details.
    This is a **motion** artifact too — mostly invisible in static renders;
    verify by orbiting.
 

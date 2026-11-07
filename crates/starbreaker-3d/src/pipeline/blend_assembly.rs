@@ -1637,7 +1637,7 @@ fn mesh_to_blend_flat(
         colors: _,
         submeshes: _,
         normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
-        tangents: _, // handedness only: the `starbreaker_bitangent_sign` corner attribute (bitangent_signs); Blender derives the tangent (MikkTSpace)
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs; the `starbreaker_bitangent_sign` attribute comes from the UVs too (bitangent_signs)
         model_min: _,
         model_max: _,
         scaling_min: _,
@@ -2806,7 +2806,7 @@ fn allocate_mesh_block(
         colors: _,
         submeshes: _,
         normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
-        tangents: _, // handedness only: the `starbreaker_bitangent_sign` corner attribute (bitangent_signs); Blender derives the tangent (MikkTSpace)
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs; the `starbreaker_bitangent_sign` attribute comes from the UVs too (bitangent_signs)
         model_min: _,
         model_max: _,
         scaling_min: _,
