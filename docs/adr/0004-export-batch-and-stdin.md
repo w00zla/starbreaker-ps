@@ -1,6 +1,6 @@
 # 0004. entity export-batch, then a long-lived --stdin mode
 
-- Status: accepted
+- Status: superseded in part by [0013](0013-export-batch-catches-panics-per-job.md) (panic handling)
 - Date: 2026-11-01
 - Recorded: 2026-11-05
 - Scope: cli (`entity export-batch`)
