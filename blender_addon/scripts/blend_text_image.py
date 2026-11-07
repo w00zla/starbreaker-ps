@@ -183,7 +183,8 @@ def main(argv: list[str]) -> int:
         text = image(library)
         target = image_path(library)
         if check:
-            current = target.read_text(encoding="utf-8") if target.exists() else None
+            # git may check the image out with CRLF (core.autocrlf on Windows)
+            current = target.read_text(encoding="utf-8").replace("\r\n", "\n") if target.exists() else None
             if current != text:
                 failed += 1
                 print(f"{target.name}: {'missing' if current is None else 'differs from its library'}", file=sys.stderr)
