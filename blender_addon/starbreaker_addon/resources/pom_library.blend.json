@@ -1824,27 +1824,6 @@
     },
     {
      "default_input": "VALUE",
-     "default_value": 36,
-     "description": "",
-     "force_non_field": false,
-     "hide_in_modifier": false,
-     "hide_value": false,
-     "identifier": "Socket_20",
-     "in_out": "INPUT",
-     "is_inspect_output": false,
-     "is_panel_toggle": false,
-     "kind": "SOCKET",
-     "max_value": 2147483647,
-     "menu_expanded": false,
-     "min_value": -2147483648,
-     "name": "Layers",
-     "optional_label": false,
-     "structure_type": "AUTO",
-     "subtype": "NONE",
-     "type": "NodeSocketInt"
-    },
-    {
-     "default_input": "VALUE",
      "default_value": 0.02,
      "description": "",
      "force_non_field": false,
@@ -1902,18 +1881,59 @@
      "optional_label": false,
      "structure_type": "AUTO",
      "type": "NodeSocketBool"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 1.0,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_0",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 3.4028234663852886e+38,
+     "menu_expanded": false,
+     "min_value": 0.001,
+     "name": "UV Scale X",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
+    },
+    {
+     "default_input": "VALUE",
+     "default_value": 1.0,
+     "description": "",
+     "force_non_field": false,
+     "hide_in_modifier": false,
+     "hide_value": false,
+     "identifier": "Socket_1",
+     "in_out": "INPUT",
+     "is_inspect_output": false,
+     "is_panel_toggle": false,
+     "kind": "SOCKET",
+     "max_value": 3.4028234663852886e+38,
+     "menu_expanded": false,
+     "min_value": 0.001,
+     "name": "UV Scale Y",
+     "optional_label": false,
+     "structure_type": "AUTO",
+     "subtype": "NONE",
+     "type": "NodeSocketFloat"
     }
    ],
    "links": [
     "Geometry:Incoming -> Mix:A_Vector",
     "Geometry:Incoming -> tangent_space:Socket_1",
-    "Group Input.003:Socket_20 -> Vector Math.002:Vector_001",
-    "Group Input.004:Socket_2 -> Math.003:Value",
-    "Group Input.004:Socket_20 -> Math.003:Value_001",
+    "Group Input.004:Socket_2 -> StarBreaker POM Detail Scale:Value",
     "Group Input.005:Socket_23 -> Mix:Factor_Float",
+    "Group Input.UV Scale:Socket_0 -> UV Scale Vector:X",
+    "Group Input.UV Scale:Socket_1 -> UV Scale Vector:Y",
     "Group Input:Input_0 -> Group.001:Input_12",
     "Group Input:Socket_2 -> Group.001:Input_11",
-    "Group Input:Socket_20 -> Group.001:Input_8",
     "Group.001:Output_13 -> Group.002:Input_8",
     "Group.001:Output_14 -> Group.002:Input_1",
     "Group.001:Output_15 -> Group.002:Input_11",
@@ -1940,9 +1960,18 @@
     "Mix:Result_Vector -> Separate XYZ:Vector",
     "Mix:Result_Vector -> Vector Math.001:Vector",
     "Separate XYZ:Z -> Vector Math:Vector_001",
-    "Texture Coordinate:UV -> Group.001:Input_7",
+    "StarBreaker Detail Layers:Value -> Group.001:Input_8",
+    "StarBreaker Detail Layers:Value -> Math.003:Value_001",
+    "StarBreaker Detail Layers:Value -> Vector Math.002:Vector_001",
+    "StarBreaker Detail Scale Multiplier:Value -> StarBreaker POM Detail Scale:Value_001",
+    "StarBreaker POM Detail Scale:Value -> Math.003:Value",
+    "Texture Coordinate:UV -> UV Scale UV:Vector",
+    "UV Scale Delta:Vector -> Group.001:Input_1",
+    "UV Scale UV:Vector -> Group.001:Input_7",
+    "UV Scale Vector:Vector -> UV Scale Delta:Vector_001",
+    "UV Scale Vector:Vector -> UV Scale UV:Vector_001",
     "Vector Math.001:Vector -> Vector Math:Vector",
-    "Vector Math.002:Vector -> Group.001:Input_1",
+    "Vector Math.002:Vector -> UV Scale Delta:Vector",
     "Vector Math.003:Vector -> Vector Math.002:Vector",
     "Vector Math:Vector -> Vector Math.003:Vector",
     "tangent_space:Socket_0 -> Mix:B_Vector"
@@ -2059,11 +2088,6 @@
      "name": "Group Input",
      "outputs": [
       {
-       "identifier": "Socket_20",
-       "name": "Layers",
-       "type": "NodeSocketInt"
-      },
-      {
        "identifier": "Socket_2",
        "name": "Scale",
        "type": "NodeSocketFloat"
@@ -2078,6 +2102,18 @@
        "identifier": "Socket_23",
        "name": "Non-planar",
        "type": "NodeSocketBool"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_0",
+       "name": "UV Scale X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_1",
+       "name": "UV Scale Y",
+       "type": "NodeSocketFloat"
       },
       {
        "identifier": "__extend__",
@@ -2093,11 +2129,6 @@
      "name": "Group Input.003",
      "outputs": [
       {
-       "identifier": "Socket_20",
-       "name": "Layers",
-       "type": "NodeSocketInt"
-      },
-      {
        "default": 0.02,
        "identifier": "Socket_2",
        "name": "Scale",
@@ -2114,6 +2145,18 @@
        "identifier": "Socket_23",
        "name": "Non-planar",
        "type": "NodeSocketBool"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_0",
+       "name": "UV Scale X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_1",
+       "name": "UV Scale Y",
+       "type": "NodeSocketFloat"
       },
       {
        "identifier": "__extend__",
@@ -2129,11 +2172,6 @@
      "name": "Group Input.004",
      "outputs": [
       {
-       "identifier": "Socket_20",
-       "name": "Layers",
-       "type": "NodeSocketInt"
-      },
-      {
        "identifier": "Socket_2",
        "name": "Scale",
        "type": "NodeSocketFloat"
@@ -2151,6 +2189,18 @@
        "type": "NodeSocketBool"
       },
       {
+       "default": 0.0,
+       "identifier": "Socket_0",
+       "name": "UV Scale X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_1",
+       "name": "UV Scale Y",
+       "type": "NodeSocketFloat"
+      },
+      {
        "identifier": "__extend__",
        "name": "",
        "type": "NodeSocketVirtual"
@@ -2163,12 +2213,6 @@
      "inputs": [],
      "name": "Group Input.005",
      "outputs": [
-      {
-       "default": 6,
-       "identifier": "Socket_20",
-       "name": "Layers",
-       "type": "NodeSocketInt"
-      },
       {
        "default": 0.02,
        "identifier": "Socket_2",
@@ -2185,6 +2229,58 @@
        "identifier": "Socket_23",
        "name": "Non-planar",
        "type": "NodeSocketBool"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_0",
+       "name": "UV Scale X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.0,
+       "identifier": "Socket_1",
+       "name": "UV Scale Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "__extend__",
+       "name": "",
+       "type": "NodeSocketVirtual"
+      }
+     ],
+     "type": "NodeGroupInput"
+    },
+    {
+     "inputs": [],
+     "name": "Group Input.UV Scale",
+     "outputs": [
+      {
+       "default": 0.02,
+       "identifier": "Socket_2",
+       "name": "Scale",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "identifier": "Input_0",
+       "name": "Bias",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": true,
+       "identifier": "Socket_23",
+       "name": "Non-planar",
+       "type": "NodeSocketBool"
+      },
+      {
+       "identifier": "Socket_0",
+       "name": "UV Scale X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Socket_1",
+       "name": "UV Scale Y",
+       "type": "NodeSocketFloat"
       },
       {
        "identifier": "__extend__",
@@ -2767,6 +2863,69 @@
      "type": "ShaderNodeSeparateXYZ"
     },
     {
+     "inputs": [],
+     "label": "Detail Layers",
+     "name": "StarBreaker Detail Layers",
+     "outputs": [
+      {
+       "default": 50.0,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "type": "ShaderNodeValue"
+    },
+    {
+     "inputs": [],
+     "label": "Scale Multiplier",
+     "name": "StarBreaker Detail Scale Multiplier",
+     "outputs": [
+      {
+       "default": 1.5625,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "type": "ShaderNodeValue"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Value_001",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 0.5,
+       "enabled": false,
+       "identifier": "Value_002",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "label": "POM Detail Scale",
+     "name": "StarBreaker POM Detail Scale",
+     "outputs": [
+      {
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "MULTIPLY",
+      "use_clamp": false
+     },
+     "type": "ShaderNodeMath"
+    },
+    {
      "frame": "Frame",
      "inputs": [],
      "name": "Texture Coordinate",
@@ -2842,6 +3001,140 @@
       "object": null
      },
      "type": "ShaderNodeTexCoord"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Vector_001",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Vector_002",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 1.0,
+       "enabled": false,
+       "identifier": "Scale",
+       "name": "Scale",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "label": "UV Scale Delta",
+     "name": "UV Scale Delta",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "MULTIPLY"
+     },
+     "type": "ShaderNodeVectorMath"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "identifier": "Vector_001",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "enabled": false,
+       "identifier": "Vector_002",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 1.0,
+       "enabled": false,
+       "identifier": "Scale",
+       "name": "Scale",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "label": "UV Scale UV",
+     "name": "UV Scale UV",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      },
+      {
+       "default": 0.0,
+       "enabled": false,
+       "identifier": "Value",
+       "name": "Value",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "settings": {
+      "operation": "MULTIPLY"
+     },
+     "type": "ShaderNodeVectorMath"
+    },
+    {
+     "inputs": [
+      {
+       "identifier": "X",
+       "name": "X",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "identifier": "Y",
+       "name": "Y",
+       "type": "NodeSocketFloat"
+      },
+      {
+       "default": 1.0,
+       "identifier": "Z",
+       "name": "Z",
+       "type": "NodeSocketFloat"
+      }
+     ],
+     "label": "UV Scale",
+     "name": "UV Scale Vector",
+     "outputs": [
+      {
+       "identifier": "Vector",
+       "name": "Vector",
+       "type": "NodeSocketVector"
+      }
+     ],
+     "type": "ShaderNodeCombineXYZ"
     },
     {
      "frame": "Frame.001",
@@ -3408,11 +3701,8 @@
        "struct": "ColorMapping",
        "use_color_ramp": false
       },
-      "extension": "CLIP",
-      "image": {
-       "id": "Image",
-       "name": "6f7c8c_argo_pom_displ.png"
-      },
+      "extension": "REPEAT",
+      "image": null,
       "image_user": {
        "frame_duration": 100,
        "frame_start": 1,
@@ -5072,7 +5362,7 @@
        "type": "NodeSocketFloat"
       }
      ],
-     "label": "apply sign",
+     "label": "Bitangent Sign Apply",
      "name": "Bitangent Sign Apply",
      "outputs": [
       {
@@ -5242,7 +5532,7 @@
      "settings": {
       "axis": "Z",
       "direction_type": "UV_MAP",
-      "uv_map": "UVMap"
+      "uv_map": ""
      },
      "type": "ShaderNodeTangent"
     },
