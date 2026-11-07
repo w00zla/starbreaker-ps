@@ -157,3 +157,32 @@ SKIN_TRANSMITTANCE_SCALE_GAIN = 4.0
 # lerp((N.L + 1)/4, KajiyaKay, k) * hairColor * 0.5 - about half the energy of
 # a Lambertian with albedo hairColor - so fibre/cap colour is scaled by this.
 HAIR_DIFFUSE_SCALE = 0.5
+
+# Look knobs (fork ADR 0015): values tuned by eye against the game's inventory tiles, not read from game data.
+# Consumers read them as ``constants.NAME`` when they build a material, so a packshot profile can set one before a
+# file opens: ``from starbreaker_addon.runtime import constants; constants.MONITOR_ROUGHNESS = 0.5``.
+
+# Roughness of a Monitor's reflecting surface: the material authors no gloss; 0.35 matched the Dark Bear's silver
+# eyeballs in the inventory tile (0.15 mirror-like, 0.6 matt).
+MONITOR_ROUGHNESS = 0.35
+# Glow colour of a LayerBlend's flat glowing layer: the weighted geometric mean Emissive^(1-w) * tint^w, the tint
+# scaled to Emissive's peak (0 = Emissive alone, 1 = the tint). 0.5 matched the Chairman's Club's eye strip.
+LAYER_BLEND_GLOW_TINT_WEIGHT = 0.5
+# Range (smoothstep) of an ore thumbnail's vein map (TexSlot8 red) that turns rock into vein: Hephaestanite's
+# orange covered half the rock at 0.3-0.7 and only flecks at 0.7-0.9, the tiles show patches in between.
+ORE_VEIN_SMOOTHSTEP = (0.6, 0.8)
+# Gain on an Organic material's (minerals: Hadanite, Beradom) layer tint x layer diffuse, for its grey detail-map
+# diffuse (sRGB ~100): at 1 every mineral came out darker than the tiles.
+ORGANIC_TINT_GAIN = 2.0
+# A metal layer's tint below this (brightest channel) keeps only its hue on the specular (F0), above it scales it:
+# the Hurston Attrition's copper rails (tint 0.061) drew black at full strength; the Ghost Mk II's 0.138 greys
+# its aluminium as in the shop shots.
+METAL_TINT_HUE_ONLY_BELOW = 0.1
+# LayerBlend edge wear: the blend map's red (the top layer) is weighted by the wear mask (TexSlot11) x this gain,
+# clamped, so only the darkest mask lets the layer below through (the Ace Interceptor's speckled shell kept fine
+# scratches at 4). None leaves the red as authored: the material's edge wear shows (Morozov-SH plate edges).
+LAYER_BLEND_WEAR_MASK_GAIN: float | None = 4.0
+# Dynamic wear of the two-layer wear materials (WearLayer, vertex colours): None takes the scene's Wear Strength
+# slider (default 0, a pristine catalogue item); a number (0-2) replaces it. LayerBlend blend-map materials leave
+# their wear layers out and ignore it.
+WEAR_STRENGTH_OVERRIDE: float | None = None

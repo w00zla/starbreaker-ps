@@ -26,7 +26,7 @@ from typing import Any
 
 import bpy
 
-from ..constants import HAIR_DIFFUSE_SCALE
+from .. import constants
 from ..hair_utils import HairParams, hair_cap_params, hair_lobes, hair_params, melanin_coefficients
 from ..node_utils import _input_socket, _output_socket
 from ..record_utils import _submaterial_texture_reference
@@ -58,7 +58,7 @@ class HairMixin:
         color_map = self._image_node(nodes, ref.export_path if ref else None, x=-700, y=0, is_color=True)
         if color_map is None:
             base_color.default_value = (
-                *(min(max(c, params.color_min), params.color_max) * HAIR_DIFFUSE_SCALE for c in params.color_scale),
+                *(min(max(c, params.color_min), params.color_max) * constants.HAIR_DIFFUSE_SCALE for c in params.color_scale),
                 1.0,
             )
         else:
@@ -67,7 +67,7 @@ class HairMixin:
             color = self._hair_vector_math(nodes, links, "MULTIPLY", _output_socket(color_map, "Color"), params.color_scale)
             color = self._hair_vector_math(nodes, links, "MAXIMUM", color, (params.color_min,) * 3)
             color = self._hair_vector_math(nodes, links, "MINIMUM", color, (params.color_max,) * 3)
-            color = self._hair_vector_math(nodes, links, "MULTIPLY", color, (HAIR_DIFFUSE_SCALE,) * 3)
+            color = self._hair_vector_math(nodes, links, "MULTIPLY", color, (constants.HAIR_DIFFUSE_SCALE,) * 3)
             links.new(color, base_color)
 
             # hairCapAlpha = ColorMap.a * (1 - (1 - saturate(N.V))^16)
@@ -189,7 +189,7 @@ class HairMixin:
             g.vec("CROSS_PRODUCT", _output_socket(geometry, "Normal"), _output_socket(tangent, "Tangent")),
         )
         diffuse = nodes.new("ShaderNodeBsdfDiffuse")
-        links.new(g.scale(color, HAIR_DIFFUSE_SCALE), diffuse.inputs["Color"])
+        links.new(g.scale(color, constants.HAIR_DIFFUSE_SCALE), diffuse.inputs["Color"])
         surface = diffuse.outputs[0]
         beta = g.math("POWER", roughness, 2.0)
         sqrt_color = g.join(*(g.math("SQRT", c) for c in g.split(color)))
