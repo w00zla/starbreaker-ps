@@ -1637,7 +1637,7 @@ fn mesh_to_blend_flat(
         colors: _,
         submeshes: _,
         normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
-        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs; the `starbreaker_bitangent_sign` attribute comes from the UVs too (bitangent_signs)
         model_min: _,
         model_max: _,
         scaling_min: _,
@@ -1724,6 +1724,7 @@ fn mesh_to_blend_flat(
     };
     // Optional: authored normals
     let custom_normals = custom_normals::CustomNormalLayer::allocate(&mut ptrs, mesh)?;
+    let bitangent_signs = bitangent_signs::BitangentSignLayer::allocate(&mut ptrs, mesh)?;
 
     // Vertex groups: decal masks + one group per skin joint.
     let deform = deform_groups::deform_groups(vertex_groups, mesh.skin.as_ref(), totvert);
@@ -1861,6 +1862,10 @@ fn mesh_to_blend_flat(
         num_attrs += 1;
     }
     if let Some(layer) = &custom_normals {
+        attr_blob.extend_from_slice(&layer.attribute());
+        num_attrs += 1;
+    }
+    if let Some(layer) = &bitangent_signs {
         attr_blob.extend_from_slice(&layer.attribute());
         num_attrs += 1;
     }
@@ -2012,6 +2017,9 @@ fn mesh_to_blend_flat(
     if let Some(layer) = &custom_normals {
         layer.write(&mut out);
     }
+    if let Some(layer) = &bitangent_signs {
+        layer.write(&mut out);
+    }
 
     // Polygon offset array
     write_block(&mut out, b"DATA", 0, poly_offs_ptr, 1, &raw_poly_offsets);
@@ -2107,6 +2115,7 @@ struct MeshBlockData {
     deform: Option<(deform_groups::DeformGroups, deform_groups::DeformGroupPtrs)>,
     modifiers: mesh_modifiers::MeshModifiers,
     custom_normals: Option<custom_normals::CustomNormalLayer>,
+    bitangent_signs: Option<bitangent_signs::BitangentSignLayer>,
     totvert: usize,
     totedge: usize,
     totpoly: usize,
@@ -2797,7 +2806,7 @@ fn allocate_mesh_block(
         colors: _,
         submeshes: _,
         normals: _,  // custom split normals: the `custom_normal` corner attribute (custom_normals)
-        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs
+        tangents: _, // not written: Blender derives tangents (MikkTSpace) from normals + UVs; the `starbreaker_bitangent_sign` attribute comes from the UVs too (bitangent_signs)
         model_min: _,
         model_max: _,
         scaling_min: _,
@@ -2854,6 +2863,7 @@ fn allocate_mesh_block(
         (0, 0, 0)
     };
     let custom_normals = custom_normals::CustomNormalLayer::allocate(ptrs, mesh)?;
+    let bitangent_signs = bitangent_signs::BitangentSignLayer::allocate(ptrs, mesh)?;
     let deform = deform_groups::deform_groups(vertex_groups, mesh.skin.as_ref(), totvert).map(|groups| {
         let block_ptrs = deform_groups::DeformGroupPtrs::allocate(ptrs, &groups);
         (groups, block_ptrs)
@@ -2924,6 +2934,10 @@ fn allocate_mesh_block(
         attr_blob.extend_from_slice(&layer.attribute());
         num_attrs += 1;
     }
+    if let Some(layer) = &bitangent_signs {
+        attr_blob.extend_from_slice(&layer.attribute());
+        num_attrs += 1;
+    }
 
     let modifiers = mesh_modifiers::MeshModifiers::allocate(
         ptrs,
@@ -2972,6 +2986,7 @@ fn allocate_mesh_block(
         deform,
         modifiers,
         custom_normals,
+        bitangent_signs,
         totvert,
         totedge,
         totpoly,
@@ -3077,6 +3092,9 @@ fn write_mesh_block(
         write_block(out, b"DATA", 0, block.raw_col_ptr, 1, color_data);
     }
     if let Some(layer) = &block.custom_normals {
+        layer.write(out);
+    }
+    if let Some(layer) = &block.bitangent_signs {
         layer.write(out);
     }
     write_block(out, b"DATA", 0, block.poly_offs_ptr, 1, &block.raw_poly_offsets);
@@ -3352,6 +3370,7 @@ fn mesh_to_blend_hierarchy(
                     deform: block.deform.clone(),
                     modifiers: block.modifiers,
                     custom_normals: block.custom_normals.clone(),
+                    bitangent_signs: block.bitangent_signs.clone(),
                     totvert: block.totvert,
                     totedge: block.totedge,
                     totpoly: block.totpoly,
@@ -4589,9 +4608,12 @@ mod tests_package_paths {
 mod deform_groups;
 mod rig;
 mod custom_normals;
+mod bitangent_signs;
 mod mesh_modifiers;
 #[cfg(test)]
 mod tests_custom_normals;
+#[cfg(test)]
+mod tests_bitangent_signs;
 #[cfg(test)]
 mod tests_rig;
 

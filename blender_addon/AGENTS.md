@@ -133,6 +133,13 @@ Verify the test passes. Pure-Python tests (no `bpy` calls) live in
 are decorated with `@unittest.skipUnless(HAVE_BPY, "requires bpy")`.
 Do not mark a test as skip-unless-bpy if it can be tested with stubs.
 
+**`.blend` libraries** (`starbreaker_addon/resources/*.blend`, fork ADR 0016):
+each has a text image `<name>.blend.json` next to it. After changing a
+library, rewrite its image and commit both:
+`blender -b --factory-startup --python scripts/blend_text_image.py -- starbreaker_addon/resources/<name>.blend`
+(`--check` compares instead; `test_blend_text_images.py` runs that check when
+`BLENDER` names the Blender executable).
+
 **Troubleshooting mindset:** Fix the root cause, not the symptom.
 No hard-coding around specific asset names, material paths, or magic
 numbers. When the correct behaviour is ambiguous (channel ordering,

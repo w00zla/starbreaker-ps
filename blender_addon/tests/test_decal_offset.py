@@ -80,10 +80,12 @@ from starbreaker_addon.runtime.constants import (
 from starbreaker_addon.manifest import MaterialSidecar, SceneInstanceRecord, SubmaterialRecord
 from starbreaker_addon.runtime.importer.builders import (
     BuildersMixin,
+    _height_image_background_bias,
     _mesh_decal_neutral_breakup_default,
     _parallax_height_sampler_extension,
 )
 from starbreaker_addon.runtime.importer.decals import DecalsMixin
+from starbreaker_addon.runtime.importer.groups import _set_pom_detail_on_tree
 from starbreaker_addon.runtime.importer.materials import MaterialsMixin
 from starbreaker_addon.runtime.importer.materials import _material_datablock_is_valid
 from starbreaker_addon.runtime.importer.orchestration import OrchestrationMixin
@@ -94,6 +96,85 @@ from starbreaker_addon.runtime.importer.utils import (
     _scene_attachment_offset_to_blender,
 )
 from starbreaker_addon.templates import template_plan_for_submaterial
+
+
+class _PixelHeadImage:
+    """An image whose pixel buffer allows only pixels[0:4]: a full copy fails the test."""
+
+    size = (2048, 2048)
+
+    def __init__(self, head):
+        self._head = list(head)
+
+    @property
+    def pixels(self):
+        return self
+
+    def __getitem__(self, key):
+        if key == slice(0, 4):
+            return self._head
+        raise AssertionError(f"POM bias must read pixels[0:4], not {key!r}")
+
+
+class _FakeValueNode:
+    def __init__(self, value: float):
+        self.outputs = [types.SimpleNamespace(default_value=value)]
+
+
+class _FakePomRoot:
+    def __init__(self, name: str, layers: float = 0.0, multiplier: float = 0.0):
+        self.name = name
+        self.nodes = {
+            "StarBreaker Detail Layers": _FakeValueNode(layers),
+            "StarBreaker Detail Scale Multiplier": _FakeValueNode(multiplier),
+        }
+
+
+class PomDetailModeTests(unittest.TestCase):
+    """apply_pom_detail_mode only sets the library's detail values; it builds no nodes."""
+
+    def test_sets_detail_values_on_pom_roots(self) -> None:
+        root = _FakePomRoot("StarBreaker POM [behr_pom_height.png] [REPEAT]")
+        self.assertTrue(_set_pom_detail_on_tree(root, "HIGH"))
+        self.assertEqual(root.nodes["StarBreaker Detail Layers"].outputs[0].default_value, 100.0)
+        self.assertEqual(root.nodes["StarBreaker Detail Scale Multiplier"].outputs[0].default_value, 6.25)
+        self.assertFalse(_set_pom_detail_on_tree(root, "HIGH"))
+
+    def test_leaves_other_groups_alone(self) -> None:
+        for name in ("StarBreaker POM [x.png] / POM_parallax", "POM_Vector", "StarBreaker Runtime Illum"):
+            tree = _FakePomRoot(name)
+            self.assertFalse(_set_pom_detail_on_tree(tree, "HIGH"))
+            self.assertEqual(tree.nodes["StarBreaker Detail Layers"].outputs[0].default_value, 0.0)
+
+
+class PomBitangentSignBakeTests(unittest.TestCase):
+    """upstream a6c9d44d: imported meshes using a POM group get the bitangent sign the tangent_space reads"""
+
+    @staticmethod
+    def _object(name, group_name, attributes=(), children=()):
+        group_node = types.SimpleNamespace(bl_idname="ShaderNodeGroup", node_tree=types.SimpleNamespace(name=group_name))
+        material = types.SimpleNamespace(node_tree=types.SimpleNamespace(nodes=[group_node]))
+        mesh = types.SimpleNamespace(name=name, attributes={a: object() for a in attributes})
+        mesh.as_pointer = lambda: id(mesh)
+        return types.SimpleNamespace(
+            type="MESH", data=mesh, material_slots=[types.SimpleNamespace(material=material)], children=list(children)
+        )
+
+    def test_bakes_pom_meshes_without_the_attribute(self) -> None:
+        import starbreaker_addon.runtime.importer.orchestration as orchestration
+
+        pom = self._object("pom", "StarBreaker POM [x.png] [REPEAT]")
+        baked_already = self._object("baked", "StarBreaker POM [x.png] [REPEAT]", attributes=("starbreaker_bitangent_sign",))
+        plain = self._object("plain", "StarBreaker Runtime Illum")
+        root = types.SimpleNamespace(type="EMPTY", children=[pom, baked_already, plain])
+        baked: list[str] = []
+        original = orchestration._bake_bitangent_sign_attribute
+        orchestration._bake_bitangent_sign_attribute = lambda mesh: baked.append(mesh.name) or True
+        try:
+            OrchestrationMixin.__new__(OrchestrationMixin)._bake_pom_mesh_bitangent_signs(root)
+        finally:
+            orchestration._bake_bitangent_sign_attribute = original
+        self.assertEqual(baked, ["pom"])
 
 
 class FakeNodeTree:
@@ -819,12 +900,38 @@ class DecalOffsetTests(unittest.TestCase):
 
         self.assertAlmostEqual(importer._parallax_bias_value(submaterial), 0.75)
 
-    def test_parallax_height_sampler_extension_clips_default_uv_range(self) -> None:
-        self.assertEqual(_parallax_height_sampler_extension(1.0), "CLIP")
-        self.assertEqual(_parallax_height_sampler_extension(0.75), "CLIP")
-
-    def test_parallax_height_sampler_extension_repeats_explicit_tiling(self) -> None:
+    def test_parallax_height_sampler_extension_always_repeats(self) -> None:
+        # The POM ray-march walks the UV across the height field, so the height
+        # sampler must REPEAT regardless of authored tiling: CLIP returns black
+        # outside 0-1 and collapses the march (upstream d2b93f0e).
+        self.assertEqual(_parallax_height_sampler_extension(1.0), "REPEAT")
+        self.assertEqual(_parallax_height_sampler_extension(0.75), "REPEAT")
         self.assertEqual(_parallax_height_sampler_extension(3.0), "REPEAT")
+
+    def test_parallax_bias_value_none_without_authored_height_bias(self) -> None:
+        # No HeightBias -> None so the caller falls back to the height-map
+        # background (decal atlases ship no HeightBias).
+        importer = ImporterUnderTest()
+        submaterial = SubmaterialRecord.from_value({"public_params": {"PomDisplacement": 0.04}})
+        self.assertIsNone(importer._parallax_bias_value(submaterial))
+
+    def test_parallax_bias_resolves_to_the_height_map_background(self) -> None:
+        importer = ImporterUnderTest()
+        height_node = types.SimpleNamespace(image=_PixelHeadImage([0.2, 0.4, 0.6, 1.0]))
+        self.assertAlmostEqual(
+            importer._resolve_parallax_bias(None, height_node), 0.299 * 0.2 + 0.587 * 0.4 + 0.114 * 0.6, places=6
+        )
+        # an authored HeightBias wins
+        self.assertAlmostEqual(importer._resolve_parallax_bias(0.75, height_node), 0.75)
+        # no readable pixel: the neutral mid-level
+        self.assertAlmostEqual(importer._resolve_parallax_bias(None, types.SimpleNamespace(image=None)), 0.5)
+
+    def test_parallax_background_bias_reads_only_the_first_pixel(self) -> None:
+        # pixels[:] would copy the whole image (~500 MB for 2048^2, upstream 30f3f60c)
+        image = _PixelHeadImage([0.2, 0.4, 0.6, 1.0])
+        self.assertAlmostEqual(
+            _height_image_background_bias(image), 0.299 * 0.2 + 0.587 * 0.4 + 0.114 * 0.6, places=6
+        )
 
     def test_missing_mesh_decal_texture_defaults_alpha_to_zero(self) -> None:
         submaterial = SubmaterialRecord.from_value({"shader_family": "MeshDecal"})

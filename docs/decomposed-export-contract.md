@@ -14,6 +14,10 @@ Within that export root:
 - `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
 - `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
 - `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
+- A mesh's second UV set (`TEXCOORD_1`, `UVMap.001` in Blender) is its second-UV stream. A mesh without one gets it decoded from its vertex colour when its material set has a `LayerBlend_V2` submaterial with `%DECALS` and without `%WEAR_DIRT_AO_VERTEX` (`MtlFile::reads_colour_second_uvs`, `dequant::decode_colour_uv2`: two 12-bit fields in 1/1024 steps, shifted by half and wrapped): that shader draws its decals via the second UV set. Other vertex colours stay colours.
+- A Blend-format mesh with UVs carries `starbreaker_bitangent_sign` (FLOAT, CORNER): per corner Blender's MikkTSpace `bitangent_sign`, computed from the UVs as Blender sees them (V flipped): +1 where the triangle's UVs wind counter-clockwise, -1 where they are mirrored; a triangle without UV or position area takes the sign of the first proper triangle at the same vertex (MikkTSpace's rule). The add-on's POM `tangent_space` group multiplies its bitangent by it. Against Blender's own `loop.bitangent_sign` it agrees on 99.89–100 % of the corners of 14 packages (eight FPS weapons, three helmets, three armour cores / suits); the rest lie in triangles without UV area. A mesh without UVs gets no attribute; the add-on's `import_package` bakes the attribute for meshes that lack it, linked `scene.blend` meshes cannot be baked. The Glb format writes no such attribute (glTF `TANGENT` carries the handedness when tangents are written).
+
+  **Note:** the sign comes from the UVs, not from the game's tangent frame (the IVO tangent / QTangent handedness, `Mesh.tangents[..][3]`), because the add-on pairs it with Blender's MikkTSpace tangent, which comes from the UVs. The game's handedness (negated for the V flip) matched on 98.7–99.9 % of the corners of the weapons and helmets, but on the worn armour cores only on 90.2 % (cds heavy core), 94.6 % (cds superheavy suit) and 94.7 % (ccc shrike): there 5–10 % of the corners carry a game sign against their UV orientation, mostly on whole faces (cds heavy core: 6.9 % of the faces), not along seams; mirrored transforms and flipped winding are ruled out, the cause is unknown. The game data is the alternative if that ever matters (e.g. normal maps baked against the game's frame).
 - exporting another ship to the same root reuses matching `Data/...` assets instead of duplicating category-specific copies.
 
 ## Scene Manifest
@@ -228,6 +232,7 @@ Each `*.materials.json` sidecar preserves:
 - structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
 - public params as structured JSON values where simple coercion is safe
 - layer manifests including source material paths, authored layer attrs, `Submtl`-selected resolved layer-material metadata, palette routing, UV tiling, resolved layer snapshots, per-layer semantic `texture_slots`, and exported layer texture references
+- `flat_layers`: `MatLayers` entries without a layer file (`Path=""`), kept apart from `layers` (whose first entry is the base layer file): a flat tint where the blend map picks their slot, with `name`, `authored_attributes`, `tint_color`, `wear_tint`, `palette_channel`, `gloss_mult`, `wear_gloss`, `uv_tiling`, `height_bias` and `height_scale`; no textures
 - authored material-set metadata such as root attributes and root-level `PublicParams`
 - authored submaterial attributes exactly as read from the `.mtl`
 - authored per-texture metadata, including nested child blocks such as `TexMod`
@@ -283,6 +288,7 @@ The exporter-side contract gaps are now mostly closed. The remaining work is pri
 
 - Shared palettes are emitted once in `Packages/<package name>/palettes.json` and referenced everywhere else by `palette_id`.
 - Material sidecars describe palette routing, but scene instances choose the concrete shared palette.
+- A root entity without a palette of its own (no `TintPaletteRef`, none by name prefix) falls back to its material's `DefaultPalette` (the material-set root attribute), then to the game's `TintPalettes/default` tree (`pipeline/palette.rs`, `fallback_tint_palette_names`). Loadout children keep their own resolution.
 - `Packages/<package name>/liveries.json` groups entity and material usage by shared palette identity so Blender-side tooling can switch palettes centrally.
 
 ## Path Rules
