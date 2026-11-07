@@ -73,6 +73,13 @@ DECAL_OFFSET_MODIFIER_NAME = "StarBreaker Decal Offset"
 DECAL_OFFSET_EXTERNAL_DEFAULT = 0.0005
 DECAL_OFFSET_INTERNAL_DEFAULT = 0.001
 
+# Parallax-occlusion depth: the POM_Vector "Scale" input is the authored CryEngine
+# PomDisplacement times POM_SCALE_MULTIPLIER (calibrated so the reference
+# pom.blend's single-decal POM, Scale ~1.5, matches PomDisplacement 0.05), capped at
+# POM_SCALE_MAX so the march does not swim. Look knobs, not game data.
+POM_SCALE_MULTIPLIER = 30.0
+POM_SCALE_MAX = 3.0
+
 POM_DETAIL_DEFAULT = "MEDIUM"
 POM_DETAIL_ITEMS = (
     ("LOW", "Low", "20 layers with reduced scale for faster viewport playback"),

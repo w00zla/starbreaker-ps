@@ -27,6 +27,8 @@ from ..constants import (
     MATERIAL_IDENTITY_SCHEMA,
     NON_COLOR_INPUT_KEYWORDS,
     POM_DETAIL_DEFAULT,
+    POM_SCALE_MAX,
+    POM_SCALE_MULTIPLIER,
     PROP_DECAL_HOST_CHANNEL,
     PROP_DECAL_HOST_RGB,
     PROP_MATERIAL_IDENTITY,
@@ -255,16 +257,41 @@ def _clamp_unit_float(value: float) -> float:
 
 
 def _parallax_height_sampler_extension(uv_tile: float) -> str:
-    """Mirror authored repeat intent for runtime POM height samplers.
+    """Wrap mode for the runtime POM height sampler: always ``REPEAT``.
 
-    POM materials only need sampler wrap mode ``REPEAT`` when the authored
-    material explicitly tiles the underlying surface beyond the base 0-1 UV
-    range. The exported layer manifest preserves that as ``uv_tiling``; every
-    other case should stay on ``CLIP`` to avoid sampling neighboring atlas
-    islands at glancing angles.
+    The POM ray-march walks the UV across the height field, so the height
+    sampler must wrap. With ``CLIP``, samples that step outside the 0-1 range
+    return black, which collapses the march: the reference plane (Bias) goes
+    inert and the parallax degenerates to a constant UV shift (upstream
+    d2b93f0e: a "SEMI" decal rendered as "EMI-F"). Cross-cell bleed on atlas
+    decals is kept small by the background-referenced Bias instead (see
+    ``_resolve_parallax_bias``). ``uv_tile`` is kept for the call sites.
     """
 
-    return "REPEAT" if float(uv_tile) > 1.0 + 1e-4 else "CLIP"
+    return "REPEAT"
+
+
+def _height_image_background_bias(image: Any) -> float | None:
+    """Luminance of a height image's top-left pixel, its atlas background.
+
+    Used as the POM reference plane (``Bias``) when no authored ``HeightBias``
+    exists: a decal atlas's corner is the flat surface level, so referencing
+    the parallax to it keeps the mid-level flush. Reads only ``pixels[0:4]``
+    (``pixels[:]`` would copy the whole image, upstream 30f3f60c). Returns
+    ``None`` when the image has no readable pixel data.
+    """
+    if image is None:
+        return None
+    try:
+        size = getattr(image, "size", None)
+        if not size or size[0] <= 0 or size[1] <= 0:
+            return None
+        pixels = image.pixels[0:4]
+        if len(pixels) < 3:
+            return None
+        return float(0.299 * pixels[0] + 0.587 * pixels[1] + 0.114 * pixels[2])
+    except Exception:
+        return None
 
 
 def _layered_wear_metallic_values(
@@ -450,7 +477,7 @@ class BuildersMixin:
         height_node: bpy.types.Node,
         target_image_nodes: list[bpy.types.Node],
         scale_value: float,
-        bias_value: float = 0.5,
+        bias_value: float | None = None,
         location: tuple[float, float] = (-1280, 720),
         uv_tile: float = 1.0,
     ) -> bpy.types.Node | None:
@@ -478,16 +505,16 @@ class BuildersMixin:
         (typically 0.02–0.1 in CryEngine's units). It is scaled up to
         POM-test's ``Scale`` range (≈1.0–3.0) so a 0.05 PomDisplacement
         reads as ≈1.5 POM scale — the reference file's hand-tuned
-        default. ``Layers`` is fixed at 40 and ``Bias`` defaults to 0.5,
-        but authored height-bias overrides are preserved when available.
+        default. ``Bias``, the reference plane, is the authored height bias,
+        else the height map's background (``_resolve_parallax_bias``). The
+        layer count is the scene's POM detail profile, set inside the group.
 
         ``uv_tile`` is the layer's UVTiling factor (default 1.0 = no
         tiling). The POM group incorporates the scale internally via its
         ``UV Scale X`` / ``UV Scale Y`` inputs so that both the starting
-        UV and the ray-march delta are scaled consistently. Height-sampler
-        wrap mode also mirrors this authored repeat intent: explicit tiling
-        uses ``REPEAT`` while default UVs stay on ``CLIP`` to avoid atlas
-        bleed. Callers must NOT also call ``_apply_uv_tiling`` on the same
+        UV and the ray-march delta are scaled consistently. The height
+        sampler always repeats (``_parallax_height_sampler_extension``).
+        Callers must NOT also call ``_apply_uv_tiling`` on the same
         target nodes; any pre-existing Mapping chain on a target's Vector
         socket is removed before POM wiring so the orphaned nodes can be
         swept later by ``_sweep_unreachable_nodes``.
@@ -518,9 +545,15 @@ class BuildersMixin:
         # the runtime POM root group based on the active scene profile.
         # Drive Scale from the authored PomDisplacement
         # (CryEngine-space ≈0.02–0.1) rescaled into POM-test's default
-        # range (≈1.5 for 0.05 input) by multiplying by 30.
-        self._set_socket_default(_input_socket(parallax_node, "Scale"), min(3.0, scale_value * 30.0))
-        self._set_socket_default(_input_socket(parallax_node, "Bias"), max(0.0, min(1.0, bias_value)))
+        # range (≈1.5 for 0.05 input), see constants.py. Bias is the
+        # reference plane: the authored HeightBias, else the height-map
+        # background so the mid-level sits flush.
+        self._set_socket_default(
+            _input_socket(parallax_node, "Scale"), min(POM_SCALE_MAX, scale_value * POM_SCALE_MULTIPLIER)
+        )
+        self._set_socket_default(
+            _input_socket(parallax_node, "Bias"), self._resolve_parallax_bias(bias_value, height_node)
+        )
         self._set_socket_default(_input_socket(parallax_node, "Non-planar"), True)
         clamped_tile = max(0.001, uv_tile)
         self._set_socket_default(_input_socket(parallax_node, "UV Scale X"), clamped_tile)
@@ -546,20 +579,40 @@ class BuildersMixin:
         return parallax_node
 
     @staticmethod
-    def _parallax_bias_value(submaterial: SubmaterialRecord) -> float:
-        return max(
-            0.0,
-            min(
-                1.0,
-                _float_public_param(
-                    submaterial,
-                    "HeightBias",
-                    "POMHeightBias",
-                    "POM_HeightBias",
-                )
-                or 0.5,
-            ),
+    def _parallax_bias_value(submaterial: SubmaterialRecord) -> float | None:
+        """Game-authored POM reference plane (``HeightBias``), or ``None``.
+
+        ``None`` lets the caller fall back to the height-map background: most
+        decal atlases ship no ``HeightBias`` and rely on it (upstream d2b93f0e).
+        """
+        value = _float_public_param(
+            submaterial,
+            "HeightBias",
+            "POMHeightBias",
+            "POM_HeightBias",
         )
+        if value is None or value <= 0.0:
+            return None
+        return max(0.0, min(1.0, value))
+
+    def _resolve_parallax_bias(
+        self,
+        bias_value: float | None,
+        height_node: bpy.types.Node | None,
+    ) -> float:
+        """Resolve the POM reference plane (POM_Vector ``Bias``).
+
+        An authored ``HeightBias`` wins; otherwise the height map's background
+        (top-left pixel luminance, for a decal atlas the flat surface level),
+        so the mid-level sits flush; 0.5, the neutral mid-level, when no pixel
+        is readable.
+        """
+        if bias_value is not None and bias_value > 0.0:
+            return max(0.0, min(1.0, bias_value))
+        background = _height_image_background_bias(getattr(height_node, "image", None))
+        if background is not None:
+            return max(0.0, min(1.0, background))
+        return 0.5
 
     def _build_managed_material(
         self,
