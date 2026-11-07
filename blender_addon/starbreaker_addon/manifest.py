@@ -336,6 +336,7 @@ class SubmaterialRecord:
     # LayerBlend layers without a layer file, a flat tint each (the
     # Artimex Chairman's Club helmet's glowing eye strip).
     flat_layers: list[LayerManifestEntry] = field(default_factory=list)
+    screen_effects: JsonDict = field(default_factory=dict)
 
     @classmethod
     def from_value(cls, value: Any) -> SubmaterialRecord:
@@ -356,6 +357,7 @@ class SubmaterialRecord:
             layer_manifest=[LayerManifestEntry.from_value(item) for item in data.get("layer_manifest", [])],
             palette_routing=PaletteRouting.from_value(data.get("palette_routing")),
             public_params=_as_dict(data.get("public_params")),
+            screen_effects=_as_dict(data.get("screen_effects")),
             variant_membership=_as_dict(data.get("variant_membership")),
             virtual_inputs=[str(item) for item in data.get("virtual_inputs", [])],
             raw=data,
@@ -457,7 +459,7 @@ class LiveryRecord:
 class LightState:
     """A single CryEngine `<defaultState|auxiliaryState|...>` snapshot.
 
-    See ``docs/StarBreaker/lights-research.md``. Values are copied verbatim
+    See ``docs/star-citizen-lighting-research.md``. Values are copied verbatim
     from the exporter's ``states`` map and are used both to populate the
     light datablock at import time and to switch between states at runtime.
     """
@@ -551,6 +553,7 @@ class InteriorPlacementRecord:
     entity_class_guid: str | None
     transform: Matrix4
     raw: JsonDict
+    ui_bindings: list[JsonDict] = field(default_factory=list)
 
     @classmethod
     def from_value(cls, value: Any) -> InteriorPlacementRecord:
@@ -561,6 +564,7 @@ class InteriorPlacementRecord:
             mesh_asset=_normalize_relative_path(_as_str(data.get("mesh_asset"))),
             material_sidecar=_normalize_relative_path(_as_str(data.get("material_sidecar"))),
             entity_class_guid=_as_str(data.get("entity_class_guid")),
+            ui_bindings=[_as_dict(item) for item in data.get("ui_bindings", []) if _as_dict(item)],
             transform=_matrix4(data.get("transform")),
             raw=data,
         )
@@ -600,6 +604,7 @@ class SceneInstanceRecord:
     material_sidecar: str | None
     mesh_asset: str | None
     palette_id: str | None
+    ui_bindings: list[JsonDict] = field(default_factory=list)
     parent_entity_name: str | None = None
     parent_node_name: str | None = None
     source_transform_basis: str | None = None
@@ -622,6 +627,7 @@ class SceneInstanceRecord:
             material_sidecar=_normalize_relative_path(_as_str(data.get("material_sidecar"))),
             mesh_asset=_normalize_relative_path(_as_str(data.get("mesh_asset"))),
             palette_id=_as_str(data.get("palette_id")),
+            ui_bindings=[_as_dict(item) for item in data.get("ui_bindings", []) if _as_dict(item)],
             parent_entity_name=_as_str(data.get("parent_entity_name")),
             parent_node_name=_as_str(data.get("parent_node_name")),
             source_transform_basis=_as_str(data.get("source_transform_basis")),
@@ -863,6 +869,11 @@ class PackageBundle:
             direct = self.export_root / Path(candidate)
             if direct.exists():
                 return direct
+        return self._resolve_through_index(candidates)
+
+    def _resolve_through_index(self, candidates: list[str]) -> Path | None:
+        # The case-insensitive lookup, for references whose casing differs from the files on a
+        # case-sensitive file system (elsewhere the direct lookup above already finds them).
         resolved = self._lookup_path_index(candidates)
         if resolved is None and not self._path_index_fresh:
             # An index taken from the shared ones may predate files exported since: scan once more.

@@ -44,6 +44,7 @@ from ..constants import (
     PROP_SOURCE_NODE_NAME,
     PROP_SUBMATERIAL_JSON,
     PROP_TEMPLATE_PATH,
+    PROP_UI_DEFAULT_STATE_IS_OFF,
     TEMPLATE_COLLECTION_NAME,
 )
 from ..package_ops import (
@@ -63,6 +64,8 @@ from .layers import LayersMixin
 from .materials import MaterialsMixin
 from .palette import PaletteMixin
 from .types import ImportedTemplate, _bake_bitangent_sign_attribute
+from .hair import HairMixin
+from .skin import SkinMixin
 from .utils import (
     _canonical_material_sidecar_path,
     _canonical_source_name,
@@ -144,7 +147,7 @@ class OrchestrationMixin:
         self.import_palette_override: str | None = None
         self.import_paint_variant_sidecar: str | None = None
         self.runtime_shared_groups_ready = False
-        self.material_identity_cache: dict[tuple[str, int, str], str] = {}
+        self.material_identity_cache: dict[tuple[str, int, str, str], str] = {}
         self.material_identity_index: dict[str, bpy.types.Material] = {}
         self.material_identity_index_ready = False
         self.sidecar_submaterials_by_index: dict[str, dict[int, SubmaterialRecord]] = {}
@@ -538,6 +541,135 @@ class OrchestrationMixin:
             return self._sidecar_default_palette_id(record.material_sidecar)
         return None
 
+    def _instance_payload_dict(self, obj: bpy.types.Object) -> dict[str, Any] | None:
+        payload = obj.get(PROP_INSTANCE_JSON)
+        if not isinstance(payload, str) or not payload:
+            return None
+        try:
+            decoded = json.loads(payload)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return decoded if isinstance(decoded, dict) else None
+
+    @staticmethod
+    def _source_names_from_payload(payload: dict[str, Any] | None) -> set[str]:
+        if payload is None:
+            return set()
+        source_names: set[str] = set()
+        for value in (
+            payload.get("source_object_name"),
+            payload.get("source_parent_name"),
+        ):
+            if isinstance(value, str) and value:
+                source_names.add(value)
+        source_ancestors = payload.get("source_ancestors")
+        if isinstance(source_ancestors, list):
+            for value in source_ancestors:
+                if isinstance(value, str) and value:
+                    source_names.add(value)
+        return source_names
+
+    def _manifest_ui_binding_records(
+        self,
+    ) -> dict[tuple[str, str], list[SceneInstanceRecord]]:
+        cached = getattr(self, "_ui_binding_records_by_asset", None)
+        if cached is not None:
+            return cached
+        indexed: dict[tuple[str, str], list[SceneInstanceRecord]] = {}
+        for record in getattr(self.package.scene, "children", []):
+            if not isinstance(record, SceneInstanceRecord):
+                continue
+            if not record.mesh_asset or not record.ui_bindings:
+                continue
+            key = (record.mesh_asset, record.material_sidecar or "")
+            indexed.setdefault(key, []).append(record)
+        self._ui_binding_records_by_asset = indexed
+        return indexed
+
+    def _manifest_ui_bindings_for_object(
+        self,
+        obj: bpy.types.Object,
+        payload: dict[str, Any] | None,
+    ) -> list[dict[str, Any]] | None:
+        mesh_asset = _string_prop(obj, PROP_MESH_ASSET)
+        if mesh_asset is None:
+            return None
+        sidecar_path = _string_prop(obj, PROP_MATERIAL_SIDECAR) or ""
+        candidates = self._manifest_ui_binding_records().get((mesh_asset, sidecar_path))
+        if not candidates and sidecar_path:
+            candidates = self._manifest_ui_binding_records().get((mesh_asset, ""))
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0].ui_bindings
+
+        ancestor_names: set[str] = set()
+        current = obj.parent
+        while current is not None:
+            name = getattr(current, "name", None)
+            if isinstance(name, str) and name:
+                ancestor_names.add(name.lower())
+            current = current.parent
+        ancestry_matches = [
+            record
+            for record in candidates
+            if record.parent_node_name
+            and any(record.parent_node_name.lower() in ancestor_name for ancestor_name in ancestor_names)
+        ]
+        narrowed = ancestry_matches or candidates
+        if len(narrowed) == 1:
+            return narrowed[0].ui_bindings
+
+        source_names = self._source_names_from_payload(payload)
+        helper_matches = [
+            record
+            for record in narrowed
+            if any(
+                isinstance(binding.get("helper_name"), str)
+                and binding.get("helper_name") in source_names
+                and isinstance(binding.get("generated_image_path"), str)
+                and binding.get("generated_image_path")
+                for binding in record.ui_bindings
+            )
+        ]
+        narrowed = helper_matches or narrowed
+        if len(narrowed) == 1:
+            return narrowed[0].ui_bindings
+
+        unique_bindings = {
+            json.dumps(bindings, sort_keys=True): bindings
+            for bindings in (record.ui_bindings for record in narrowed)
+        }
+        if len(unique_bindings) == 1:
+            return next(iter(unique_bindings.values()))
+        return None
+
+    def _ui_binding_for_object(self, obj: bpy.types.Object) -> dict[str, Any] | None:
+        payload = self._instance_payload_dict(obj)
+        bindings = payload.get("ui_bindings") if payload is not None else None
+        if (not isinstance(bindings, list) or not bindings) and payload is not None:
+            bindings = self._manifest_ui_bindings_for_object(obj, payload)
+        if not isinstance(bindings, list) or not bindings:
+            return None
+        source_names = self._source_names_from_payload(payload)
+        fallback = None
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            image_path = binding.get("generated_image_path")
+            if not isinstance(image_path, str) or not image_path:
+                continue
+            helper_name = binding.get("helper_name")
+            if isinstance(helper_name, str) and helper_name:
+                if helper_name in source_names:
+                    return binding
+                if fallback is None:
+                    fallback = binding
+                continue
+            if fallback is None:
+                fallback = binding
+        return fallback
+
     def _sidecar_default_palette_id(self, sidecar_path: str) -> str | None:
         load_sidecar = getattr(self.package, "load_material_sidecar", None)
         if not callable(load_sidecar):
@@ -722,6 +854,16 @@ class OrchestrationMixin:
             sidecar,
             slot_mapping,
         )
+        ui_binding = self._ui_binding_for_object(obj)
+        ui_image_path = (
+            ui_binding.get("generated_image_path")
+            if isinstance(ui_binding, dict) and isinstance(ui_binding.get("generated_image_path"), str)
+            else None
+        )
+        if isinstance(ui_binding, dict) and bool(ui_binding.get("default_state_is_off")):
+            obj[PROP_UI_DEFAULT_STATE_IS_OFF] = True
+        elif callable(getattr(obj, "get", None)) and obj.get(PROP_UI_DEFAULT_STATE_IS_OFF) is not None:
+            del obj[PROP_UI_DEFAULT_STATE_IS_OFF]
         if slot_mapping is not None:
             if mesh_materials is not None:
                 while len(mesh_materials) < len(slot_mapping):
@@ -732,6 +874,7 @@ class OrchestrationMixin:
                 sidecar_path,
                 source_sidecar_path,
                 effective_palette_id,
+                ui_image_path,
                 tuple(slot_mapping),
                 ("channel", precomputed_host_channel)
                 if precomputed_host_channel is not None
@@ -801,7 +944,13 @@ class OrchestrationMixin:
                         f"StarBreaker: slot index {slot_index} exceeds material slot count for {obj.name}"
                     )
                     continue
-                material = self.material_for_submaterial(sidecar_path, sidecar, submaterial, palette)
+                material = self.material_for_submaterial(
+                    sidecar_path,
+                    sidecar,
+                    submaterial,
+                    palette,
+                    ui_image_path=ui_image_path,
+                )
                 slot = obj.material_slots[slot_index]
                 replaced_material = slot.material
                 slot.link = "OBJECT"
@@ -837,7 +986,13 @@ class OrchestrationMixin:
                     f"StarBreaker: submaterial index {submaterial.index} exceeds material slot count for {obj.name}"
                 )
                 continue
-            material = self.material_for_submaterial(sidecar_path, sidecar, submaterial, palette)
+            material = self.material_for_submaterial(
+                sidecar_path,
+                sidecar,
+                submaterial,
+                palette,
+                ui_image_path=ui_image_path,
+            )
             slot = obj.material_slots[submaterial.index]
             replaced_material = slot.material
             slot.link = "OBJECT"
@@ -1007,6 +1162,7 @@ class OrchestrationMixin:
                 material_sidecar=placement.material_sidecar,
                 mesh_asset=placement.mesh_asset,
                 palette_id=effective_placement_palette,
+                ui_bindings=list(placement.ui_bindings),
                 raw=placement.raw,
             )
             effective_palette_id = self._effective_palette_id(instance.palette_id)
@@ -1230,22 +1386,26 @@ class OrchestrationMixin:
         if cached is not None:
             return cached
 
-        # Phase R3 perf fix: pass ``import_select_created_objects=False``
-        # to skip the Blender glTF addon's post-import O(n) selection
-        # pass directly via the official op param (replacing the prior
-        # monkey-patch on ``BlenderScene.select_imported_objects``). With
-        # hundreds of small template imports against a growing scene the
-        # selection step was costing ~24s on a Clipper import; the
-        # StarBreaker addon never reads selection state.
         before = {obj.as_pointer() for obj in bpy.data.objects}
-        result = bpy.ops.import_scene.gltf(
-            filepath=str(asset_path),
-            import_pack_images=False,
-            merge_vertices=False,
-            import_select_created_objects=False,
-        )
-        if "FINISHED" not in result:
-            raise RuntimeError(f"Failed to import {asset_path}")
+        if asset_path.suffix.lower() == ".blend":
+            with bpy.data.libraries.load(str(asset_path), link=False) as (data_from, data_to):
+                data_to.objects = list(data_from.objects)
+        else:
+            # Phase R3 perf fix: pass ``import_select_created_objects=False``
+            # to skip the Blender glTF addon's post-import O(n) selection
+            # pass directly via the official op param (replacing the prior
+            # monkey-patch on ``BlenderScene.select_imported_objects``). With
+            # hundreds of small template imports against a growing scene the
+            # selection step was costing ~24s on a Clipper import; the
+            # StarBreaker addon never reads selection state.
+            result = bpy.ops.import_scene.gltf(
+                filepath=str(asset_path),
+                import_pack_images=False,
+                merge_vertices=False,
+                import_select_created_objects=False,
+            )
+            if "FINISHED" not in result:
+                raise RuntimeError(f"Failed to import {asset_path}")
 
         imported = [obj for obj in bpy.data.objects if obj.as_pointer() not in before]
         imported_materials_by_pointer: dict[int, bpy.types.Material] = {}
@@ -1475,6 +1635,8 @@ class PackageImporter(
     LayersMixin,
     MaterialsMixin,
     BuildersMixin,
+    SkinMixin,
+    HairMixin,
     GroupsMixin,
     OrchestrationMixin,
 ):

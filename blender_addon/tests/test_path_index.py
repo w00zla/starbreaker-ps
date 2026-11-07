@@ -121,18 +121,25 @@ class SharedPathIndexTests(unittest.TestCase):
     def _bundle(self) -> PackageBundle:
         return PackageBundle(self.root, self.root / "Packages/x/scene.json", None, {}, {}, {})
 
+    @staticmethod
+    def _lookup(bundle: PackageBundle, reference: str) -> Path | None:
+        # The index lookup behind resolve_path. On a case-insensitive file system (Windows,
+        # macOS) resolve_path finds a differently cased reference directly and never builds
+        # the index, so these tests drive the lookup itself.
+        return bundle._resolve_through_index([reference])
+
     def test_sharing_is_off_by_default(self) -> None:
         self.assertIsNone(manifest._SHARED_PATH_INDEXES)
         first, second = self._bundle(), self._bundle()
-        self.assertEqual(first.resolve_path("data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
-        self.assertEqual(second.resolve_path("data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
+        self.assertEqual(self._lookup(first, "data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
+        self.assertEqual(self._lookup(second, "data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
         self.assertIsNot(first._path_index, second._path_index)
 
     def test_bundles_of_one_root_share_one_index(self) -> None:
         share_path_indexes(True)
         first, second = self._bundle(), self._bundle()
-        self.assertEqual(first.resolve_path("data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
-        self.assertEqual(second.resolve_path("DATA/Objects/TEX_A.dds"), self.root / "Data/Objects/Tex_A.dds")
+        self.assertEqual(self._lookup(first, "data/objects/tex_a.dds"), self.root / "Data/Objects/Tex_A.dds")
+        self.assertEqual(self._lookup(second, "DATA/Objects/TEX_A.dds"), self.root / "Data/Objects/Tex_A.dds")
         self.assertIs(first._path_index, second._path_index)
         self.assertTrue(first._path_index_fresh)
         self.assertFalse(second._path_index_fresh)
@@ -143,35 +150,35 @@ class SharedPathIndexTests(unittest.TestCase):
         _touch(other / "Data/Objects/Tex_B.dds")
         first = self._bundle()
         second = PackageBundle(other, other / "Packages/x/scene.json", None, {}, {}, {})
-        first.resolve_path("data/objects/tex_a.dds")
-        self.assertEqual(second.resolve_path("data/objects/tex_b.dds"), other / "Data/Objects/Tex_B.dds")
-        self.assertIsNone(second.resolve_path("data/objects/tex_a.dds"))
+        self._lookup(first, "data/objects/tex_a.dds")
+        self.assertEqual(self._lookup(second, "data/objects/tex_b.dds"), other / "Data/Objects/Tex_B.dds")
+        self.assertIsNone(self._lookup(second, "data/objects/tex_a.dds"))
         self.assertIsNot(first._path_index, second._path_index)
 
     def test_a_file_exported_after_the_index_was_built_is_still_found(self) -> None:
         share_path_indexes(True)
-        self._bundle().resolve_path("data/objects/tex_a.dds")  # builds the shared index
+        self._lookup(self._bundle(), "data/objects/tex_a.dds")  # builds the shared index
         _touch(self.root / "Data/Objects/Later.dds")
         late = self._bundle()
-        self.assertEqual(late.resolve_path("data/objects/later.dds"), self.root / "Data/Objects/Later.dds")
+        self.assertEqual(self._lookup(late, "data/objects/later.dds"), self.root / "Data/Objects/Later.dds")
         self.assertTrue(late._path_index_fresh)
         # the rescan replaced the shared index: the next bundle starts from the new one
-        self.assertEqual(self._bundle().resolve_path("data/objects/later.dds"), self.root / "Data/Objects/Later.dds")
+        self.assertEqual(self._lookup(self._bundle(), "data/objects/later.dds"), self.root / "Data/Objects/Later.dds")
 
     def test_a_file_removed_after_the_index_was_built_is_not_returned(self) -> None:
         share_path_indexes(True)
-        self._bundle().resolve_path("data/objects/tex_a.dds")
+        self._lookup(self._bundle(), "data/objects/tex_a.dds")
         (self.root / "Data/Objects/Tex_A.dds").unlink()
-        self.assertIsNone(self._bundle().resolve_path("data/objects/tex_a.dds"))
+        self.assertIsNone(self._lookup(self._bundle(), "data/objects/tex_a.dds"))
 
     def test_dropping_the_shared_indexes_returns_to_one_index_per_bundle(self) -> None:
         share_path_indexes(True)
-        self._bundle().resolve_path("data/objects/tex_a.dds")
+        self._lookup(self._bundle(), "data/objects/tex_a.dds")
         share_path_indexes(False)
         self.assertIsNone(manifest._SHARED_PATH_INDEXES)
         first, second = self._bundle(), self._bundle()
-        first.resolve_path("data/objects/tex_a.dds")
-        second.resolve_path("data/objects/tex_a.dds")
+        self._lookup(first, "data/objects/tex_a.dds")
+        self._lookup(second, "data/objects/tex_a.dds")
         self.assertIsNot(first._path_index, second._path_index)
 
     def test_empty_path_never_builds_an_index(self) -> None:

@@ -249,7 +249,7 @@ def _load_package_ops() -> tuple[types.ModuleType, types.ModuleType]:
             self.package_root = package_root
 
         def import_scene(self, prefer_cycles=True, palette_id=None):
-            importer_stub.events.append(("import", str(self.package.scene_path), prefer_cycles, palette_id))
+            importer_stub.events.append(("import", self.package.scene_path, prefer_cycles, palette_id))
             return "imported-root"
 
         def rebuild_object_materials(self, obj, palette_id):
@@ -310,10 +310,10 @@ class PackageOpsTests(unittest.TestCase):
         self.assertEqual(list(self.bpy.data.objects), [other_root])
 
     def test_import_package_removes_existing_package_before_import(self) -> None:
-        events: list[tuple[str, str]] = []
+        events: list[tuple[str, Path]] = []
 
         def _cleanup(scene_path):
-            events.append(("cleanup", str(scene_path)))
+            events.append(("cleanup", scene_path))
             return 1
 
         @contextmanager
@@ -329,10 +329,11 @@ class PackageOpsTests(unittest.TestCase):
         root = self.package_ops.import_package(context, "/tmp/vulture/scene.json", prefer_cycles=False, palette_id="palette/test")
 
         self.assertEqual(root, "imported-root")
-        self.assertEqual(events, [("cleanup", "/tmp/vulture/scene.json")])
+        # Paths, not their strings: str() of a Path uses the OS separator.
+        self.assertEqual(events, [("cleanup", Path("/tmp/vulture/scene.json"))])
         self.assertEqual(
             importer_stub.events,
-            [("import", "/tmp/vulture/scene.json", False, "palette/test")],
+            [("import", Path("/tmp/vulture/scene.json"), False, "palette/test")],
         )
 
     def test_refresh_materials_rebuilds_only_meshes_with_sidecars(self) -> None:
@@ -1369,6 +1370,52 @@ class PackageOpsTests(unittest.TestCase):
             self.package_ops._canonical_source_name("ui_ore_hephaestanite_1_a_mtl_ore_hephaestanite _00"),
             "ore_hephaestanite",
         )
+
+    def test_unnamed_submaterial_is_refreshable_by_index(self) -> None:
+        """A UIPlane-style submaterial with no name (e.g. screen_16x9_a) must
+        still be matched to its sidecar entry by slot index so the load-post
+        refresh rebuilds it instead of skipping it."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")  # node_tree=None
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+
+        # Precondition: the exported name canonicalises to empty.
+        self.assertEqual(
+            po._canonical_source_name("rtt_comms_opaque_hightech_mtl__00"), ""
+        )
+        self.assertTrue(po._material_slot_can_refresh(obj, 0, material, sidecar))
+        self.assertTrue(po._object_needs_material_refresh(obj, sidecar))
+
+    def test_unnamed_submaterial_without_matching_index_is_not_refreshable(self) -> None:
+        """The index fallback must not green-light a slot whose index has no
+        submaterial in the sidecar."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+
+        # Slot index 1 has no submaterial in the sidecar -> not refreshable.
+        self.assertFalse(po._material_slot_can_refresh(obj, 1, material, sidecar))
+
+    def test_unnamed_submaterial_index_fallback_gated_on_slot_map_none(self) -> None:
+        """When a slot map sends this slot to None (a deliberate "no match"),
+        the raw-slot_index fallback for an unnamed submaterial must not widen
+        it back to refreshable."""
+        po = self.package_ops
+        sidecar = types.SimpleNamespace(submaterials=[types.SimpleNamespace(index=0)])
+        material = FakeMaterial("rtt_comms_opaque_hightech_mtl__00")  # node_tree=None
+        obj = FakeObject("screen_16x9_a")
+        obj.type = "MESH"
+        obj.material_slots = [FakeSlot(material)]
+        # The mesh data carries a slot map that maps slot 0 to None.
+        obj.data = {self.package_ops.PROP_IMPORTED_SLOT_MAP: "[null]"}
+
+        self.assertFalse(po._material_slot_can_refresh(obj, 0, material, sidecar))
 
 
 class AnimationDisplayNameTests(unittest.TestCase):

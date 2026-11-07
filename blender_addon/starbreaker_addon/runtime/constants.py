@@ -53,6 +53,12 @@ PROP_HAS_POM = "starbreaker_has_pom"
 PROP_LIGHT_STATES_JSON = "starbreaker_light_states"
 PROP_LIGHT_ACTIVE_STATE = "starbreaker_light_active_state"
 PROP_LIGHT_SEMANTIC_KIND = "starbreaker_light_semantic_kind"
+# True when the entity's authored default state is "off" (e.g. an
+# `SCItemDisplayScreen` whose `defaultView` resolved to a view with no
+# concrete canvas content). The exporter still renders a "switched on" image
+# so the texture is non-blank, but downstream tools can use this flag to gate
+# initial visibility of the UI surface.
+PROP_UI_DEFAULT_STATE_IS_OFF = "starbreaker_ui_default_state_is_off"
 PROP_ENGINE_GLOW_CONTROL_JSON = "starbreaker_engine_glow_control"
 PROP_ENGINE_GLOW_STRENGTH = "starbreaker_engine_glow_strength"
 PROP_SHARED_GLOW_CONTROL_JSON = "starbreaker_shared_glow_control"
@@ -107,7 +113,7 @@ LUMENS_PER_WATT_WHITE = 120.0
 # luminous flux = intensity * 4π, which divided by 683 lm/W gives Watts.
 # Updated to 1500.0 for brighter interior lighting
 # (Phase 36+: aligned with Max script's PowerModifier and user-verified brightness).
-# See ``docs/StarBreaker/lights-research.md``.
+# See ``docs/star-citizen-lighting-research.md``.
 import math as _math
 
 SC_LIGHT_CANDELA_SCALE = 1500.0
@@ -130,3 +136,17 @@ SCENE_AXIS_CONVERSION_INV = SCENE_AXIS_CONVERSION.inverted()
 GLTF_LIGHT_BASIS_CORRECTION = Quaternion((math.sqrt(0.5), 0.0, -math.sqrt(0.5), 0.0))
 NON_COLOR_INPUT_KEYWORDS = ("normal", "roughness", "gloss", "mask", "height", "specular", "opacity", "id_map")
 MATERIAL_IDENTITY_SCHEMA = "runtime_material_v13"
+
+# HumanSkin_V2 → Principled BSDF. CryEngine's LIGHTINGMODEL_SKIN (screen-space
+# skin scattering + thin-region transmittance) has no direct Principled
+# equivalent; skin is rendered as random-walk subsurface with these knobs.
+SKIN_SUBSURFACE_RADIUS = (1.0, 0.35, 0.2)  # per-channel scatter ratio; red travels furthest
+SKIN_SUBSURFACE_SCALE = 0.004  # metres (packages are metre-scale)
+# HumanSkin_V2 transmittance = TexSlot12.r * TranslucencyMultiplier * 0.25;
+# widens the subsurface distance in thin regions (ears, nostrils).
+SKIN_TRANSMITTANCE_SCALE_GAIN = 4.0
+
+# HairPBR -> Principled BSDF. HairPBR diffuse is a wrapped term
+# lerp((N.L + 1)/4, KajiyaKay, k) * hairColor * 0.5 - about half the energy of
+# a Lambertian with albedo hairColor - so fibre/cap colour is scaled by this.
+HAIR_DIFFUSE_SCALE = 0.5

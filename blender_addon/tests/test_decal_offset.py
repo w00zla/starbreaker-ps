@@ -73,10 +73,11 @@ from starbreaker_addon.runtime.constants import (
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_SCOPE,
+    PROP_SHADER_FAMILY,
     PROP_SUBMATERIAL_JSON,
     PROP_TEMPLATE_KEY,
 )
-from starbreaker_addon.manifest import MaterialSidecar, SubmaterialRecord
+from starbreaker_addon.manifest import MaterialSidecar, SceneInstanceRecord, SubmaterialRecord
 from starbreaker_addon.runtime.importer.builders import (
     BuildersMixin,
     _mesh_decal_neutral_breakup_default,
@@ -234,6 +235,7 @@ class MaterialReuseImporterUnderTest(MaterialsMixin):
         submaterial,
         palette,
         material_identity,
+        ui_image_path=None,
     ) -> None:
         self.rebuild_calls.append(material.name)
         material[PROP_TEMPLATE_KEY] = template_plan_for_submaterial(submaterial).template_key
@@ -256,17 +258,29 @@ class ManagedMaterialBuildImporterUnderTest(BuildersMixin):
     def _build_hard_surface_material(self, material, submaterial, palette, plan) -> None:
         self.build_calls.append("hard_surface")
 
+    def _build_human_skin_material(self, material, sidecar, submaterial, plan) -> None:
+        self.build_calls.append("human_skin")
+
+    def _build_hair_cap_material(self, material, submaterial, plan) -> None:
+        self.build_calls.append("hair_cap")
+
+    def _build_hair_fibre_material(self, material, sidecar, submaterial, plan) -> None:
+        self.build_calls.append("hair_fibre")
+
+    group_contract = None
+
     def _group_contract_for_submaterial(self, submaterial):
-        return None
+        return self.group_contract
 
     def _build_contract_group_material(self, material, submaterial, palette, plan, group_contract) -> bool:
-        return False
+        self.build_calls.append("contract")
+        return True
 
     def _build_glass_material(self, material, submaterial, palette, plan) -> None:
         self.build_calls.append("glass")
 
-    def _build_screen_material(self, material, submaterial, palette, plan) -> None:
-        self.build_calls.append("screen")
+    def _build_screen_material(self, material, submaterial, palette, plan, ui_image_path=None) -> None:
+        self.build_calls.append("screen:ui" if ui_image_path else "screen")
 
     def _build_effect_material(self, material, submaterial, palette, plan) -> None:
         self.build_calls.append("effects")
@@ -411,7 +425,7 @@ class FakePackageWithSidecars:
     def __init__(self, sidecar):
         self.sidecar = sidecar
         self.palettes = {}
-        self.scene = types.SimpleNamespace(root_entity=types.SimpleNamespace(palette_id=None))
+        self.scene = types.SimpleNamespace(root_entity=types.SimpleNamespace(palette_id=None), children=[])
 
     def load_material_sidecar(self, sidecar_path):
         return self.sidecar
@@ -436,7 +450,7 @@ class OrchestrationImporterUnderTest(OrchestrationMixin, BuildersMixin):
     def _effective_palette_id(self, palette_id: str | None) -> str | None:
         return palette_id
 
-    def material_for_submaterial(self, sidecar_path, sidecar, submaterial, palette):
+    def material_for_submaterial(self, sidecar_path, sidecar, submaterial, palette, ui_image_path=None):
         return FakeMaterial(f"material_{submaterial.index}")
 
     def _remove_replaced_slot_material(self, material) -> None:
@@ -504,6 +518,85 @@ class DecalOffsetTests(unittest.TestCase):
         self.assertIsNotNone(obj.material_slots[1].material)
         self.assertIsNone(obj.material_slots[2].material)
         self.assertIsNone(obj.material_slots[3].material)
+
+    def test_ui_binding_for_object_falls_back_to_manifest_bindings_for_native_blend_meshes(self) -> None:
+        sidecar_path = "Data/Materials/vehicles/manufacturer/DRAK/drak_int_master_01_TEX0.materials.json"
+        mesh_asset = "Data/Objects/Spaceships/Seats/DRAK/clipper/drak_clipper_dashboard_pilot_LOD0.blend"
+        importer = OrchestrationImporterUnderTest(FakeSidecar([FakeSubmaterial(0, "RTT_Screen")]))
+        importer.package.scene.children = [
+            SceneInstanceRecord.from_value(
+                {
+                    "entity_name": "DRAK_Clipper_Dashboard",
+                    "mesh_asset": mesh_asset,
+                    "material_sidecar": sidecar_path,
+                    "parent_node_name": "hardpoint_seat_pilot_dashboard",
+                    "ui_bindings": [
+                        {
+                            "helper_name": "Screen_Left_Upper_RTT",
+                            "generated_image_path": "Data/UI/Generated/1e7b5c1786ffb083_TEX0.png",
+                        }
+                    ],
+                }
+            )
+        ]
+        parent = FakeObject(material_slots=[], mesh=FakeMesh(polygons=[], vertex_count=0), name="body_50_hardpoint_seat_pilot_dashboard")
+        obj = FakeObject(
+            material_slots=[],
+            mesh=FakeMesh(polygons=[], vertex_count=0),
+            name="Screen_Left_Upper_RTT",
+            starbreaker_mesh_asset=mesh_asset,
+            starbreaker_material_sidecar=sidecar_path,
+            starbreaker_instance_json=json.dumps(
+                {
+                    "source_object_name": "Screen_Left_Upper_RTT",
+                    "source_parent_name": "screen_top_left_geo",
+                    "source_ancestors": ["Frame", "Main_Body"],
+                    "ui_bindings": [],
+                }
+            ),
+        )
+        obj.parent = parent
+
+        binding = importer._ui_binding_for_object(obj)
+
+        self.assertEqual(
+            binding,
+            {
+                "helper_name": "Screen_Left_Upper_RTT",
+                "generated_image_path": "Data/UI/Generated/1e7b5c1786ffb083_TEX0.png",
+            },
+        )
+
+    def test_ui_binding_for_object_uses_helper_binding_as_fallback_when_unmatched(self) -> None:
+        importer = OrchestrationImporterUnderTest(FakeSidecar([FakeSubmaterial(0, "screen")]))
+        obj = FakeObject(
+            material_slots=[],
+            mesh=FakeMesh(polygons=[], vertex_count=0),
+            name="mesh_end_screen_plane",
+            starbreaker_instance_json=json.dumps(
+                {
+                    "source_object_name": "mesh_end_screen_plane",
+                    "source_parent_name": None,
+                    "source_ancestors": [],
+                    "ui_bindings": [
+                        {
+                            "helper_name": "$slot_standing_screen",
+                            "generated_image_path": "Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalendofbed_a.png",
+                        }
+                    ],
+                }
+            ),
+        )
+
+        binding = importer._ui_binding_for_object(obj)
+
+        self.assertEqual(
+            binding,
+            {
+                "helper_name": "$slot_standing_screen",
+                "generated_image_path": "Data/UI/Generated/ship/drak/Clipper/buildingblocks_canvas_i_med_medicalendofbed_a.png",
+            },
+        )
 
     def test_illum_pom_rebind_uses_palette_channel_rgb_when_no_authored_fallback_exists(self) -> None:
         decal = FakeMaterial(
@@ -891,6 +984,68 @@ class MaterialReuseTests(unittest.TestCase):
 
         self.assertEqual(importer.build_calls, ["nodraw"])
         self.assertEqual(material[PROP_TEMPLATE_KEY], "nodraw")
+
+
+class ScreenDispatchTests(unittest.TestCase):
+    def _build(self, ui_image_path):
+        from test_templates import synthetic_submaterial
+
+        importer = ManagedMaterialBuildImporterUnderTest()
+        importer.group_contract = object()
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/screen.mtl", "submaterials": []})
+        importer._build_managed_material(
+            FakeMaterial("screen:display"),
+            "",
+            sidecar,
+            synthetic_submaterial("Monitor"),
+            None,
+            "identity",
+            ui_image_path=ui_image_path,
+        )
+        return importer.build_calls
+
+    def test_screen_without_ui_image_keeps_its_template_group(self) -> None:
+        # The Monitor tint and reflection live in the template-group build.
+        self.assertEqual(self._build(None), ["contract"])
+
+    def test_screen_with_ui_image_uses_the_screen_builder(self) -> None:
+        self.assertEqual(self._build("Data/UI/screen_TEX0.png"), ["screen:ui"])
+
+
+class HumanSkinDispatchTests(unittest.TestCase):
+    def test_human_skin_submaterial_uses_skin_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        submaterial = synthetic_submaterial("HumanSkin_V2", tokens=["TONE_ADJUSTMENT"])
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/head.mtl", "submaterials": []})
+        importer = ManagedMaterialBuildImporterUnderTest()
+        material = FakeMaterial("head:shader_head")
+
+        importer._build_managed_material(material, "", sidecar, submaterial, None, "identity")
+
+        self.assertEqual(importer.build_calls, ["human_skin"])
+        self.assertEqual(material[PROP_SHADER_FAMILY], "HumanSkin_V2")
+
+    def test_hair_cap_submaterial_uses_hair_cap_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        submaterial = synthetic_submaterial("HairPBR", tokens=["HAIR_CAP"])
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/hair.mtl", "submaterials": []})
+        importer = ManagedMaterialBuildImporterUnderTest()
+
+        importer._build_managed_material(FakeMaterial("hair:scalp"), "", sidecar, submaterial, None, "identity")
+
+        self.assertEqual(importer.build_calls, ["hair_cap"])
+
+    def test_hair_cards_and_coat_use_hair_fibre_builder(self) -> None:
+        from test_templates import synthetic_submaterial
+
+        sidecar = MaterialSidecar.from_value({"source_material_path": "Data/x/hair.mtl", "submaterials": []})
+        for tokens in (["HAIR_CARDS", "CARD_ID_MAP"], ["HAIR_COAT"]):
+            importer = ManagedMaterialBuildImporterUnderTest()
+            submaterial = synthetic_submaterial("HairPBR", tokens=tokens)
+            importer._build_managed_material(FakeMaterial("hair:strands"), "", sidecar, submaterial, None, "identity")
+            self.assertEqual(importer.build_calls, ["hair_fibre"], tokens)
 
 
 class SceneAttachmentOffsetTests(unittest.TestCase):
