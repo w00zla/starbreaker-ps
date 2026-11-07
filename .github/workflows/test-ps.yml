@@ -1,0 +1,56 @@
+name: Tests (starbreaker-ps)
+
+# The fork's own test workflow (ADR 0012). Upstream's ci.yml, starbreaker-ui-tests.yml and deploy-website.yml stay in
+# the tree unchanged, so upstream merges do not conflict, but are disabled in this repository's Actions settings.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to a pull request cancels its stale run; main runs never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # Throwaway builds: no incremental state, no debuginfo (the workspace dev profile carries it for local debugging).
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ps-test-${{ matrix.platform }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # Everything but the Tauri app: packshot needs the CLI and its crates, and the app needs webkit on Linux.
+      - name: cargo test
+        run: cargo test --workspace --exclude starbreaker-app --locked
+
+  addon:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      # Blender 5.2 bundles Python 3.13 and numpy. The tests use fakes for bpy, no Blender needed.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: numpy
+        run: python -m pip install numpy
+      - name: unittest
+        working-directory: blender_addon
+        run: python -m unittest discover -s tests -v

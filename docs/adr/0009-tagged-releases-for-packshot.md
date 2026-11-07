@@ -1,6 +1,6 @@
 # 0009. Publish tagged releases for packshot to pin
 
-- Status: accepted; release names per [0010](0010-version-suffix-ps.md) (`0.3.2-ps.n`)
+- Status: accepted; release names per [0010](0010-version-suffix-ps.md) (`0.3.2-ps.n`), process per [0012](0012-own-test-and-release-workflows.md)
 - Date: 2026-11-05
 - Recorded: 2026-11-05
 - Scope: release process

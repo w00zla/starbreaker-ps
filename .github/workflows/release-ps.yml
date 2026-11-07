@@ -1,0 +1,100 @@
+name: Release (starbreaker-ps)
+
+# The fork's releases for packshot (ADR 0009, 0012). A tag named like the workspace version, without "v"
+# (e.g. 0.3.2-ps.3), on a commit of main builds the CLI for Windows and Linux, zips the Blender add-on and publishes
+# all of it with a SHA256SUMS file. Upstream's release.yml only reacts to "v*" tags, so it never runs for these.
+on:
+  push:
+    tags:
+      - "*-ps.*"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Tag matches the version and is on main
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $tag does not match the workspace version $version"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $tag is not on main"
+            exit 1
+          fi
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release -p starbreaker --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: target/release/starbreaker.exe
+          if-no-files-found: error
+
+  # Linux against glibc 2.31 via cargo-zigbuild (ADR 0003): runs on every Linux from glibc 2.31 on.
+  linux:
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - uses: mlugg/setup-zig@v2
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+      - name: Build
+        run: cargo zigbuild --release -p starbreaker --locked --target x86_64-unknown-linux-gnu.2.31
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: target/x86_64-unknown-linux-gnu/release/starbreaker
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist-in
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          mkdir dist
+          (cd dist-in/windows && zip -q "../../dist/starbreaker-${tag}-windows-x86_64.zip" starbreaker.exe)
+          chmod +x dist-in/linux/starbreaker
+          tar -czf "dist/starbreaker-${tag}-linux-x86_64.tar.gz" -C dist-in/linux starbreaker
+          # The add-on from the tagged commit, as Blender expects it: one top-level folder starbreaker_addon/.
+          git archive --format=zip --prefix=starbreaker_addon/ \
+            -o "dist/starbreaker_addon-${tag}.zip" "${GITHUB_SHA}:blender_addon/starbreaker_addon"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" dist/* --title "$tag" --verify-tag \
+            --notes "starbreaker-ps $tag, built from ${GITHUB_SHA}. Check the files against SHA256SUMS."
