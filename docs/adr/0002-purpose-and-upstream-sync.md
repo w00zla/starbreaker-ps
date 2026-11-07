@@ -1,6 +1,6 @@
 # 0002. The fork serves packshot and the catalog extract; syncs are merges checked by sample renders
 
-- Status: accepted
+- Status: superseded in part by [0015](0015-addon-grafts-upstream-parts-keeps-item-path.md) (add-on changes are taken selectively, not merged)
 - Date: 2026-11-01
 - Recorded: 2026-11-05
 - Scope: repository policy

@@ -1,6 +1,6 @@
 # 0001. Base the fork on the fleetyards fork and merge upstream into it
 
-- Status: accepted
+- Status: superseded in part by [0015](0015-addon-grafts-upstream-parts-keeps-item-path.md) (the add-on takes upstream's self-contained parts)
 - Date: 2026-11-01
 - Recorded: 2026-11-05
 - Scope: whole repository (exporter crates, blender_addon, licence)
