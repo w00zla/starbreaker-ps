@@ -3,16 +3,29 @@ name: Release (starbreaker-ps)
 # The fork's releases for packshot (ADR 0009, 0012). A tag named like the workspace version, without "v"
 # (e.g. 0.3.2-ps.3), on a commit of main builds the CLI for Windows and Linux, zips the Blender add-on and publishes
 # all of it with a SHA256SUMS file. Upstream's release.yml only reacts to "v*" tags, so it never runs for these.
+#
+# A push to main that changes the dependencies only builds, to warm the release cache: a tag run may read the caches of
+# main but not those of an earlier tag, and rust-cache keeps the dependencies, which change only with Cargo.lock.
 on:
   push:
     tags:
       - "*-ps.*"
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - ".github/workflows/release-ps.yml"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -34,13 +47,20 @@ jobs:
 
   windows:
     needs: check
+    # Runs after a passed check (tag) or a skipped one (main warm-up).
+    if: ${{ !cancelled() && needs.check.result != 'failure' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ps-release-windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build
         run: cargo build --release -p starbreaker --locked
-      - uses: actions/upload-artifact@v7
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
         with:
           name: windows
           path: target/release/starbreaker.exe
@@ -49,18 +69,25 @@ jobs:
   # Linux against glibc 2.31 via cargo-zigbuild (ADR 0003): runs on every Linux from glibc 2.31 on.
   linux:
     needs: check
+    if: ${{ !cancelled() && needs.check.result != 'failure' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: ps-release-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: mlugg/setup-zig@v2
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --locked
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
       - name: Build
         run: cargo zigbuild --release -p starbreaker --locked --target x86_64-unknown-linux-gnu.2.31
-      - uses: actions/upload-artifact@v7
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
         with:
           name: linux
           path: target/x86_64-unknown-linux-gnu/release/starbreaker
@@ -68,6 +95,7 @@ jobs:
 
   publish:
     needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     permissions:
       contents: write
