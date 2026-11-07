@@ -160,6 +160,7 @@ pub const ATTR_DOMAIN_CORNER: u8 = 3;
 pub const ATTR_TYPE_INT16_2D: i16 = 2;
 pub const ATTR_TYPE_INT: i16 = 3;
 pub const ATTR_TYPE_INT32_2D: i16 = 4;
+pub const ATTR_TYPE_FLOAT: i16 = 5;
 pub const ATTR_TYPE_FLOAT2: i16 = 6;
 pub const ATTR_TYPE_FLOAT3: i16 = 7;
 pub const ATTR_TYPE_BYTE_COLOR: i16 = 9;

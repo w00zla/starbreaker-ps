@@ -62,7 +62,8 @@ When POM behaviour looks wrong, diff against this reference. The displace
   - `runtime/constants.py`: `POM_SCALE_MULTIPLIER`, `POM_SCALE_MAX`,
     `POM_DETAIL_*`, `pom_detail_settings`.
   - `types._bake_bitangent_sign_attribute` + `orchestration._bake_pom_mesh_bitangent_signs`
-    — the mirrored-UV correction (see Vertical inversion below).
+    — the mirrored-UV correction (see Vertical inversion below); the exporter's
+    side is `crates/starbreaker-3d/src/pipeline/blend_assembly/bitangent_signs.rs`.
 - Small decals can be culled at lower LODs; the FPS weapons checked on
   2026-11-07 carry their POM decals at LOD1 (packshot's export) too.
 
@@ -117,15 +118,18 @@ The functional Bias is what lets `Scale` grow without the mid-level swimming.
    face the bitangent flips. `tangent_space` multiplies its bitangent by the
    per-corner `starbreaker_bitangent_sign` (±1 MikkTSpace sign) and takes the
    tangent of the render UV map (`Tangent.uv_map` empty). Both halves must be
-   present: the `Attribute`+`Multiply` in `tangent_space` **and** the baked
-   attribute on the *rendered* mesh. The add-on bakes it when it imports a package
-   (template loader, then `_bake_pom_mesh_bitangent_signs`).
-   **Open (2026-11-07):** a decomposed export opened as `scene.blend` (packshot,
-   load-post refresh) links its meshes from the mesh libraries, which carry no
-   attribute, and the refresh bakes nothing (linked meshes are read-only). The
-   `Attribute` node then reads 0, so the bitangent component — the vertical
-   parallax — is zero on every face. Muting the multiply changes ~5 % of the
-   Scourge's pixels.
+   present: the `Attribute`+`Multiply` in `tangent_space` **and** the
+   attribute on the *rendered* mesh. The exporter writes it into every Blend-format
+   mesh with a tangent stream (the game's handedness, negated for the V flip; see
+   the export contract), so the meshes a `scene.blend` links carry it (packshot's
+   path: linked meshes are read-only, the load-post refresh cannot bake). The
+   add-on bakes Blender's MikkTSpace sign when it imports a package (template
+   loader, which overwrites the exported one, then
+   `_bake_pom_mesh_bitangent_signs` for meshes still without it). Without the
+   attribute the `Attribute` node reads 0 and the vertical parallax is zero on
+   every face: on the Scourge that was ~5 % of the pixels (oblique view).
+   Check the attribute against `mesh.calc_tangents()` / `loop.bitangent_sign`
+   on a local copy of the mesh.
    This is a **motion** artifact too — mostly invisible in static renders;
    verify by orbiting.
 
