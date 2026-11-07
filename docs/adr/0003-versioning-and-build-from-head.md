@@ -1,6 +1,6 @@
 # 0003. Version as 0.3.2-qm.n, binaries built from the committed HEAD
 
-- Status: superseded in part by [0010](0010-version-suffix-ps.md) (the `-qm` suffix)
+- Status: superseded in part by [0010](0010-version-suffix-ps.md) (the `-qm` suffix) and [0012](0012-own-test-and-release-workflows.md) (release binaries are built here, not by the consumer's scripts)
 - Date: 2026-11-04
 - Recorded: 2026-11-05
 - Scope: build, versioning

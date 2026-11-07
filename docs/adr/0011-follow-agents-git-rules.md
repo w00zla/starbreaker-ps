@@ -1,6 +1,6 @@
 # 0011. Changes follow AGENTS.md: pull requests, squash merge, no trailers
 
-- Status: accepted
+- Status: superseded in part by [0014](0014-co-authored-by-trailers-allowed.md) (the trailer rule)
 - Date: 2026-11-06
 - Scope: repository policy
 
