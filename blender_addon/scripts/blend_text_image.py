@@ -38,6 +38,8 @@ _SKIP_SOCKET_ITEM_PROPS = {
     "rna_type", "name", "identifier", "item_type", "in_out", "position", "index", "parent", "select",
     "bl_socket_idname", "socket_type", "attribute_domain", "default_attribute_name", "layer_selection_field",
 }
+# nodes whose setting is their output's value: kept even when the output is linked
+_VALUE_OUTPUT_NODES = {"ShaderNodeValue", "ShaderNodeRGB"}
 
 
 def _num(value):
@@ -95,13 +97,13 @@ def _props(struct, skip):
     return out
 
 
-def _socket(socket):
+def _socket(socket, keep_default=False):
     out = {"identifier": socket.identifier, "name": socket.name, "type": socket.bl_idname}
     if not socket.enabled:
         out["enabled"] = False
     if socket.hide_value:
         out["hide_value"] = True
-    if not socket.is_linked and hasattr(socket, "default_value"):
+    if (keep_default or not socket.is_linked) and hasattr(socket, "default_value"):
         out["default"] = _value(socket.default_value)
     return out
 
@@ -131,7 +133,7 @@ def _node(node):
     if settings:
         out["settings"] = settings
     out["inputs"] = [_socket(s) for s in node.inputs]
-    out["outputs"] = [_socket(s) for s in node.outputs]
+    out["outputs"] = [_socket(s, node.bl_idname in _VALUE_OUTPUT_NODES) for s in node.outputs]
     return out
 
 

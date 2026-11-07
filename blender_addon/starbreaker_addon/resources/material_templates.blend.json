@@ -3199,6 +3199,12 @@
      "name": "Colour",
      "outputs": [
       {
+       "default": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+       ],
        "identifier": "Color",
        "name": "Color",
        "type": "NodeSocketColor"
