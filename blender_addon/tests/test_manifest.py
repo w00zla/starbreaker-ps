@@ -311,6 +311,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(texture.texture_identity, "ddna_normal")
         self.assertEqual(texture.alpha_semantic, "smoothness")
 
+    @unittest.skipUnless(COMPONENT_MASTER.is_file(), "component_master fixture not present; skipping")
     def test_layer_manifest_preserves_texture_slots(self) -> None:
         component = MaterialSidecar.from_file(COMPONENT_MASTER)
         layered = next(
