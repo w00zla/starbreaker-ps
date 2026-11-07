@@ -23,8 +23,11 @@
 >   - DDS textures read only the mip levels an export needs.
 >   - Add-on: material rules fitted to the game's inventory tiles (glow, glass, organics, palette metals, monitors),
 >     faster import with pixel-identical results.
-> - **Version** `0.3.2-ps.n`: build with `cargo build --release -p starbreaker`. Tagged releases for packshot are
->   planned ([ADR 0009](docs/adr/0009-tagged-releases-for-packshot.md)).
+> - **GUI not maintained:** the desktop app (`app/`) is not the focus of this fork. It is not built or tested here and may
+>   be broken or lack the fork's changes; use the CLI.
+> - **Version** `0.3.2-ps.n`. [Releases](https://github.com/w00zla/starbreaker-ps/releases) carry the CLI for Windows and
+>   Linux (glibc 2.31 or newer), the Blender add-on as a zip and a `SHA256SUMS` file, each built from a tag on `main`
+>   ([ADR 0012](docs/adr/0012-own-test-and-release-workflows.md)). To build yourself: `cargo build --release -p starbreaker`.
 >
 > Not affiliated with either project; problems with this fork belong here, not upstream. Everything below is the original
 > upstream README.

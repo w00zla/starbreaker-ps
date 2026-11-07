@@ -17,3 +17,4 @@ one, and only the old record's status line and this index change. Records 0001-0
 | [0009](0009-tagged-releases-for-packshot.md) | Publish tagged releases for packshot to pin | accepted | 2026-11-05 |
 | [0010](0010-version-suffix-ps.md) | Version suffix -ps.n | accepted | 2026-11-06 |
 | [0011](0011-follow-agents-git-rules.md) | Changes follow AGENTS.md: pull requests, squash merge, no trailers | accepted | 2026-11-06 |
+| [0012](0012-own-test-and-release-workflows.md) | Own test and release workflows; upstream's stay in the tree, disabled | accepted | 2026-11-07 |
