@@ -63,6 +63,8 @@ from .layers import LayersMixin
 from .materials import MaterialsMixin
 from .palette import PaletteMixin
 from .types import ImportedTemplate, _bake_bitangent_sign_attribute
+from .hair import HairMixin
+from .skin import SkinMixin
 from .utils import (
     _canonical_material_sidecar_path,
     _canonical_source_name,
@@ -1475,6 +1477,8 @@ class PackageImporter(
     LayersMixin,
     MaterialsMixin,
     BuildersMixin,
+    SkinMixin,
+    HairMixin,
     GroupsMixin,
     OrchestrationMixin,
 ):

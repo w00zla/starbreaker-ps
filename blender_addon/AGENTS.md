@@ -56,7 +56,14 @@ blender_addon/
 
 `PackageImporter` is composed from mixins in this order:
 `(PaletteMixin, DecalsMixin, LayersMixin, MaterialsMixin,
-BuildersMixin, GroupsMixin, OrchestrationMixin)`.
+BuildersMixin, SkinMixin, HairMixin, GroupsMixin, OrchestrationMixin)`.
+`HairMixin` (`importer/hair.py`) builds `HairPBR` caps and fibres (params,
+incl. CHF dye bound via `applies_to`, in `runtime/hair_utils.py`). Shared node
+math for both builders lives in `importer/node_math.py` (`NodeMath`).
+`SkinMixin` (`importer/skin.py`) builds `HumanSkin_V2`; its parameters
+(incl. CHF overrides from `root_entity.character`) resolve in the bpy-free
+`runtime/skin_utils.py`. Tests that stub mixin modules by name
+(`test_scene_instances.py`) must list every mixin module.
 
 Orchestration owns `create_light`, interior placement, and the
 top-level import loop. When adding a new per-entity behaviour, add it
