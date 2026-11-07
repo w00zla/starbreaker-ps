@@ -27,6 +27,7 @@ from ..constants import (
     PROP_MATERIAL_IDENTITY,
     PROP_MATERIAL_SIDECAR,
     PROP_PALETTE_SCOPE,
+    PROP_TEMPLATE_KEY,
     PROP_SOURCE_NODE_NAME,
     PROP_SUBMATERIAL_JSON,
     SC_LIGHT_CANDELA_SCALE,
@@ -84,6 +85,7 @@ def _material_is_compatible(
     submaterial: SubmaterialRecord,
     palette: PaletteRecord | None,
     palette_scope: str,
+    ui_image_path: str | None = None,
 ) -> bool:
     existing_sidecar_path = _string_prop(material, PROP_MATERIAL_SIDECAR)
     canonical_sidecar_path = _canonical_material_sidecar_path(sidecar_path, sidecar)
@@ -103,13 +105,64 @@ def _material_is_compatible(
     if not _managed_material_runtime_graph_is_sane(material):
         return False
 
-    return _string_prop(material, PROP_PALETTE_SCOPE) == palette_scope
+    if _string_prop(material, PROP_PALETTE_SCOPE) != palette_scope:
+        return False
+
+    # A screen built with a generated UI image fits only that image; a material
+    # without one does not fit a screen that has one, nor the other way round.
+    existing_identity = _string_prop(material, PROP_MATERIAL_IDENTITY) or ""
+    if ui_image_path is not None:
+        if existing_identity and not existing_identity.endswith(f"|ui:{ui_image_path}"):
+            return False
+    elif "|ui:" in existing_identity:
+        return False
+
+    return True
 
 
 def _managed_material_runtime_graph_is_sane(material: bpy.types.Material) -> bool:
     node_tree = material.node_tree
     if node_tree is None:
         return False
+
+    # Only screens built from a generated UI image use the screen-effects graph;
+    # the others are built from their template group.
+    if _string_prop(material, PROP_TEMPLATE_KEY) == "screen_hud" and "|ui:" in (
+        _string_prop(material, PROP_MATERIAL_IDENTITY) or ""
+    ):
+        screen_nodes = [
+            node
+            for node in node_tree.nodes
+            if node.bl_idname == "ShaderNodeGroup"
+            and getattr(getattr(node, "node_tree", None), "name", "").startswith(
+                "StarBreaker Runtime Screen"
+            )
+        ]
+        if not screen_nodes:
+            return False
+        for node in screen_nodes:
+            group_tree = getattr(node, "node_tree", None)
+            if group_tree is None or group_tree.get("starbreaker_runtime_built_signature") != "screen_v4":
+                return False
+            for socket_name in ("Base Color", "Emission Strength", "Use CRT", "Vector", "X pixels", "Y pixels"):
+                if node.inputs.get(socket_name) is None:
+                    return False
+            embedded_groups = {
+                nested.node_tree.name
+                for nested in group_tree.nodes
+                if nested.bl_idname == "ShaderNodeGroup"
+                and getattr(nested, "node_tree", None) is not None
+            }
+            if "RGB_grid" not in embedded_groups:
+                return False
+        material_groups = {
+            node.node_tree.name
+            for node in node_tree.nodes
+            if node.bl_idname == "ShaderNodeGroup"
+            and getattr(node, "node_tree", None) is not None
+        }
+        if "Pixelate" not in material_groups:
+            return False
 
     layer_surface_nodes = [
         node

@@ -72,9 +72,11 @@ from starbreaker_addon.runtime.record_utils import (
     _organic_specular,
     _layer_blend_wear_texture,
 )
+from starbreaker_addon.templates import screen_effects_apply_crt
 from starbreaker_addon.runtime.importer.utils import (
     _canonical_source_name,
     _material_identity,
+    _managed_material_runtime_graph_is_sane,
     _remapped_submaterial_for_slot,
     _submaterials_by_name,
     _unique_submaterials_by_name,
@@ -131,6 +133,35 @@ class _MaterialSocketProbe(MaterialsMixin):
         return _FakeImageNode(image_path)
 
 
+class _FakeGroupTree(dict):
+    def __init__(self, name: str, signature: str, nodes: list[object] | None = None) -> None:
+        super().__init__(starbreaker_runtime_built_signature=signature)
+        self.name = name
+        self.nodes = nodes or []
+
+
+class _FakeGroupNode:
+    bl_idname = "ShaderNodeGroup"
+
+    def __init__(self, node_tree: _FakeGroupTree, inputs: tuple[str, ...] = ()) -> None:
+        self.node_tree = node_tree
+        self.inputs = {name: object() for name in inputs}
+
+
+class _FakeNodeTree:
+    def __init__(self, nodes: list[object]) -> None:
+        self.nodes = nodes
+        self.links = []
+
+
+class _FakeManagedMaterial(dict):
+    def __init__(self, template_key: str, node_tree: _FakeNodeTree | None, identity: str | None = None) -> None:
+        super().__init__(starbreaker_template_key=template_key)
+        if identity is not None:
+            self["starbreaker_material_identity"] = identity
+        self.node_tree = node_tree
+
+
 # ---------------------------------------------------------------------------
 # Tests for _submaterials_by_name
 # ---------------------------------------------------------------------------
@@ -166,6 +197,69 @@ class TestCanonicalSourceName(unittest.TestCase):
             by_name.get(_canonical_source_name("ui_ore_hephaestanite_1_a_mtl_ore_hephaestanite _00")),
             sidecar.submaterials[0],
         )
+
+
+_UI_SCREEN_IDENTITY = "runtime_material_v13|screen|ui:Data/UI/screen_TEX0.png"
+
+
+class TestManagedScreenMaterialGraph(unittest.TestCase):
+    def test_screen_material_requires_current_runtime_group_signature(self) -> None:
+        runtime_group = _FakeGroupTree("StarBreaker Runtime Screen", "screen_v1")
+        material = _FakeManagedMaterial(
+            "screen_hud",
+            _FakeNodeTree([_FakeGroupNode(runtime_group, inputs=("Base Color",))]),
+            _UI_SCREEN_IDENTITY,
+        )
+
+        self.assertFalse(_managed_material_runtime_graph_is_sane(material))
+
+    def test_screen_material_requires_material_level_pixelate_group(self) -> None:
+        runtime_group = _FakeGroupTree("StarBreaker Runtime Screen", "screen_v4")
+        material = _FakeManagedMaterial(
+            "screen_hud",
+            _FakeNodeTree([
+                _FakeGroupNode(
+                    runtime_group,
+                    inputs=("Base Color", "Emission Strength", "Use CRT", "Vector", "X pixels", "Y pixels"),
+                )
+            ]),
+            _UI_SCREEN_IDENTITY,
+        )
+
+        self.assertFalse(_managed_material_runtime_graph_is_sane(material))
+
+    def test_screen_material_accepts_current_crt_runtime_group(self) -> None:
+        runtime_group = _FakeGroupTree(
+            "StarBreaker Runtime Screen",
+            "screen_v4",
+            nodes=[
+                _FakeGroupNode(_FakeGroupTree("RGB_grid", "")),
+            ],
+        )
+        material = _FakeManagedMaterial(
+            "screen_hud",
+            _FakeNodeTree([
+                _FakeGroupNode(
+                    runtime_group,
+                    inputs=("Base Color", "Emission Strength", "Use CRT", "Vector", "X pixels", "Y pixels"),
+                ),
+                _FakeGroupNode(_FakeGroupTree("Pixelate", "")),
+            ]),
+            _UI_SCREEN_IDENTITY,
+        )
+
+        self.assertTrue(_managed_material_runtime_graph_is_sane(material))
+
+    def test_screen_without_ui_image_keeps_its_template_group(self) -> None:
+        # Monitor, DisplayScreen and UIPlane without a generated UI image are
+        # built from their template group, not the screen-effects graph.
+        material = _FakeManagedMaterial(
+            "screen_hud",
+            _FakeNodeTree([_FakeGroupNode(_FakeGroupTree("SB_DisplayScreen_v1", ""))]),
+            "runtime_material_v13|screen",
+        )
+
+        self.assertTrue(_managed_material_runtime_graph_is_sane(material))
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +718,23 @@ class TestMeshDecalDiffuseMultipliers(unittest.TestCase):
             }
         )
         self.assertEqual(_mesh_decal_diffuse_multipliers(hull), (None, None))
+
+
+class TestScreenEffects(unittest.TestCase):
+    def test_screen_effects_apply_crt_reads_sidecar_flag(self) -> None:
+        submaterial = SubmaterialRecord.from_value(
+            {
+                "shader_family": "UIPlane",
+                "screen_effects": {"apply_crt": True},
+            }
+        )
+
+        self.assertTrue(screen_effects_apply_crt(submaterial))
+
+    def test_screen_effects_apply_crt_defaults_false(self) -> None:
+        submaterial = SubmaterialRecord.from_value({"shader_family": "UIPlane"})
+
+        self.assertFalse(screen_effects_apply_crt(submaterial))
 
 
 class TestMaterialAlphaSources(unittest.TestCase):
