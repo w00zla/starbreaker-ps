@@ -583,6 +583,60 @@ def _make_package_linked_object_data_local(package_root: bpy.types.Object) -> in
     return localized_count
 
 
+def _prune_empty_mesh_material_slots(package_root: bpy.types.Object) -> int:
+    """Detach material slots from geometry-less meshes under ``package_root``.
+
+    A mesh with zero polygons (e.g. a seat-access interaction proxy the
+    exporter writes with no geometry) shades nothing, yet it still carries a
+    placeholder material with no node tree. Blender's FBX exporter wraps every
+    material slot on a selected object and crashes on ``node_tree is None``.
+    Detaching the material is a structural cleanup keyed on geometry (polygon
+    count), not on any asset name, so it generalises to every package.
+    """
+    cleared = 0
+    candidates = [package_root, *list(getattr(package_root, "children_recursive", ()))]
+    for obj in candidates:
+        if getattr(obj, "type", None) != "MESH":
+            continue
+        data = getattr(obj, "data", None)
+        polygons = getattr(data, "polygons", None) if data is not None else None
+        if polygons is None or len(polygons) != 0:
+            continue
+        for slot in getattr(obj, "material_slots", ()):
+            if getattr(slot, "material", None) is not None:
+                slot.material = None
+                cleared += 1
+    return cleared
+
+
+def _detach_unresolved_empty_materials(package_root: bpy.types.Object) -> list[str]:
+    """Last-resort guard: detach any remaining mesh-slot material that has no
+    shader node tree, returning ``"<object> / <material>"`` descriptions.
+
+    The material refresh and :func:`_prune_empty_mesh_material_slots` resolve
+    the two known categories of node-tree-less materials. Anything that still
+    reaches FBX export with ``node_tree is None`` would crash Blender's FBX
+    exporter (it wraps every material slot). This guard detaches such a slot so
+    the export stays usable, and the caller reports a WARNING naming each one.
+    A non-empty result is NOT routine: it means a material the refresh should
+    have rebuilt did not resolve, and the named materials are the lead to that
+    root cause — this guard keeps the export working, it does not excuse the gap.
+    """
+    detached: list[str] = []
+    candidates = [package_root, *list(getattr(package_root, "children_recursive", ()))]
+    for obj in candidates:
+        if getattr(obj, "type", None) != "MESH":
+            continue
+        for slot in getattr(obj, "material_slots", ()):
+            material = getattr(slot, "material", None)
+            if material is None:
+                continue
+            if getattr(material, "node_tree", None) is None:
+                detached.append(f"{obj.name} / {getattr(material, 'name', '?')}")
+                slot.material = None
+    return detached
+
+
 def _selected_package(context: bpy.types.Context) -> PackageBundle | None:
     package_root = _package_root_from_context(context)
     if package_root is None:
@@ -903,10 +957,17 @@ class STARBREAKER_OT_make_instances_real(Operator):
 
         realized_instances = _make_package_collection_instances_real(context, package_root)
         localized_data = _make_package_linked_object_data_local(package_root)
-        if realized_instances == 0 and localized_data == 0:
+        pruned_slots = _prune_empty_mesh_material_slots(package_root)
+        unresolved_materials = _detach_unresolved_empty_materials(package_root)
+        if (
+            realized_instances == 0
+            and localized_data == 0
+            and pruned_slots == 0
+            and not unresolved_materials
+        ):
             self.report(
                 {"INFO"},
-                "No collection instances or linked object data found under the selected StarBreaker package",
+                "No collection instances, linked object data, or empty-mesh materials found under the selected StarBreaker package",
             )
             return {"FINISHED"}
 
@@ -914,10 +975,23 @@ class STARBREAKER_OT_make_instances_real(Operator):
         self.report(
             {"INFO"},
             (
-                f"Made {realized_instances} instance container(s) real and "
-                f"localized {localized_data} linked datablock(s)"
+                f"Made {realized_instances} instance container(s) real, "
+                f"localized {localized_data} linked datablock(s), and "
+                f"pruned {pruned_slots} empty-mesh material slot(s)"
             ),
         )
+        if unresolved_materials:
+            preview = ", ".join(unresolved_materials[:5])
+            if len(unresolved_materials) > 5:
+                preview = f"{preview}, +{len(unresolved_materials) - 5} more"
+            self.report(
+                {"WARNING"},
+                (
+                    f"Detached {len(unresolved_materials)} material(s) with no shader "
+                    f"node tree to keep FBX export working — these did not rebuild and "
+                    f"should be investigated: {preview}"
+                ),
+            )
         return {"FINISHED"}
 
 
