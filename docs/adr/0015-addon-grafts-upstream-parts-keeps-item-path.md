@@ -1,6 +1,6 @@
 # 0015. The add-on takes upstream's self-contained parts and keeps the item path
 
-- Status: accepted
+- Status: superseded in part by [0016](0016-own-blend-libraries-with-text-image.md) (the POM chain: the fork keeps its own library)
 - Date: 2026-11-07
 - Scope: Blender add-on, syncs with upstream
 - Supersedes in part: [0001](0001-fork-base-fleetyards-plus-upstream.md) (add-on base), [0002](0002-purpose-and-upstream-sync.md) (syncs are merges)
