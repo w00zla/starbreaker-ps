@@ -14,6 +14,7 @@ Within that export root:
 - `Packages/<package name>/animations/<clip>.json` holds per-clip animation bodies (see [Animation Records](#animation-records)).
 - `Packages/<package name>/weapon_assembly_diagnostics.json` is written only for FPS weapon assemblies that produced diagnostics.
 - `Data/...` contains reusable mesh assets, material sidecars, and exported textures using canonical P4k-style paths rooted at `Data/`. Mesh assets are `.glb` with the Glb format and `.blend` with the Blend format (`mesh_asset_extension`); the Blend format also writes `Packages/<package name>/scene.blend`, which links the mesh `.blend` files.
+- A mesh's second UV set (`TEXCOORD_1`, `UVMap.001` in Blender) is its second-UV stream. A mesh without one gets it decoded from its vertex colour when its material set has a `LayerBlend_V2` submaterial with `%DECALS` and without `%WEAR_DIRT_AO_VERTEX` (`MtlFile::reads_colour_second_uvs`, `dequant::decode_colour_uv2`: two 12-bit fields in 1/1024 steps, shifted by half and wrapped): that shader draws its decals via the second UV set. Other vertex colours stay colours.
 - exporting another ship to the same root reuses matching `Data/...` assets instead of duplicating category-specific copies.
 
 ## Scene Manifest
@@ -228,6 +229,7 @@ Each `*.materials.json` sidecar preserves:
 - structured `texture_transform` objects derived from authored `TexMod` blocks when texture UV animation or tiling metadata is present
 - public params as structured JSON values where simple coercion is safe
 - layer manifests including source material paths, authored layer attrs, `Submtl`-selected resolved layer-material metadata, palette routing, UV tiling, resolved layer snapshots, per-layer semantic `texture_slots`, and exported layer texture references
+- `flat_layers`: `MatLayers` entries without a layer file (`Path=""`), kept apart from `layers` (whose first entry is the base layer file): a flat tint where the blend map picks their slot, with `name`, `authored_attributes`, `tint_color`, `wear_tint`, `palette_channel`, `gloss_mult`, `wear_gloss`, `uv_tiling`, `height_bias` and `height_scale`; no textures
 - authored material-set metadata such as root attributes and root-level `PublicParams`
 - authored submaterial attributes exactly as read from the `.mtl`
 - authored per-texture metadata, including nested child blocks such as `TexMod`
@@ -283,6 +285,7 @@ The exporter-side contract gaps are now mostly closed. The remaining work is pri
 
 - Shared palettes are emitted once in `Packages/<package name>/palettes.json` and referenced everywhere else by `palette_id`.
 - Material sidecars describe palette routing, but scene instances choose the concrete shared palette.
+- A root entity without a palette of its own (no `TintPaletteRef`, none by name prefix) falls back to its material's `DefaultPalette` (the material-set root attribute), then to the game's `TintPalettes/default` tree (`pipeline/palette.rs`, `fallback_tint_palette_names`). Loadout children keep their own resolution.
 - `Packages/<package name>/liveries.json` groups entity and material usage by shared palette identity so Blender-side tooling can switch palettes centrally.
 
 ## Path Rules
